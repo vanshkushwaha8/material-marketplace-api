@@ -1,0 +1,20 @@
+const express = require('express');
+
+const authRoutes = require('./auth.routes');
+const twofaRoutes = require('./twofa.routes');
+const sessionRoutes = require('./session.routes');
+const publicRoutes = require('./public.routes');
+const materialCategoryRoutes = require('./materialCategory.routes');
+const materialListingRoutes = require('./materialListing.routes');
+const offerRoutes = require('./offer.routes');
+const savedListingRoutes = require('./savedListing.routes');
+const userRouter = express.Router();
+userRouter.use('/', authRoutes);
+userRouter.use('/', twofaRoutes);
+userRouter.use('/', publicRoutes);
+userRouter.use('/', sessionRoutes);
+userRouter.use('/', materialCategoryRoutes);
+userRouter.use('/', materialListingRoutes);
+userRouter.use('/', offerRoutes);
+userRouter.use('/', savedListingRoutes);
+module.exports = userRouter;

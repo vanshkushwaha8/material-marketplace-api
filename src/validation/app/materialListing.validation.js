@@ -1,0 +1,82 @@
+const Joi = require("joi");
+const { CONDITION_TYPES } = require('../../constants/materialListing.constants');
+const { MATERIAL_UNITS } = require('../../constants/materialUnit.constants');
+
+const objectId = () => Joi.string().pattern(/^[a-fA-F0-9]{24}$/).messages({
+  'string.pattern.base': 'Must be a valid MongoDB ObjectId',
+});
+
+class materialListingValidation {
+  static create() {
+    return Joi.object({
+      title: Joi.string().trim().min(3).max(150).required(),
+      description: Joi.string().trim().max(3000).allow(''),
+      category: objectId().required(),
+      subcategory: objectId().allow(null, ''),
+      brand: Joi.string().trim().max(100).allow(''),
+      condition: Joi.string().valid(...Object.values(CONDITION_TYPES)).required(),
+      quantity: Joi.number().positive().required(),
+      unit: Joi.string().valid(...MATERIAL_UNITS).required(),
+      price: Joi.number().min(0).required(),
+      currency: Joi.string().trim().default('INR'),
+      negotiable: Joi.boolean().default(true),
+      specifications: Joi.object().unknown(true).default({}),
+      manufacturingDate: Joi.date().allow(null),
+      purchaseDate: Joi.date().allow(null),
+      location: Joi.object({
+        city: Joi.string().trim().required(),
+        state: Joi.string().trim().required(),
+        pincode: Joi.string().trim().allow(''),
+        area: Joi.string().trim().allow(''),
+        latitude: Joi.number().min(-90).max(90).allow(null),
+        longitude: Joi.number().min(-180).max(180).allow(null),
+      }).required(),
+      images: Joi.array().items(Joi.string()).max(12).default([]).optional(), // temp-upload filenames
+      invoiceProof: Joi.string().allow(null, ''),
+    });
+  }
+
+  static update() {
+    return this.create().fork(
+      ['title', 'category', 'condition', 'quantity', 'unit', 'price', 'location'],
+      (schema) => schema.optional()
+    );
+  }
+
+  static list() {
+    return Joi.object({
+      page: Joi.number().integer().min(1).default(1),
+      limit: Joi.number().integer().min(1).max(100).default(20),
+      search: Joi.string().trim().allow(''),
+      category: objectId().allow(''),
+      subcategory: objectId().allow(''),
+      condition: Joi.string().valid(...Object.values(CONDITION_TYPES)).allow(''),
+      brand: Joi.string().trim().allow(''),
+      minPrice: Joi.number().min(0).allow(null, ''),
+      maxPrice: Joi.number().min(0).allow(null, ''),
+      minQuantity: Joi.number().min(0).allow(null, ''),
+      negotiable: Joi.boolean().allow(null, ''),
+      verified: Joi.boolean().allow(null, ''),
+      city: Joi.string().trim().allow(''),
+      state: Joi.string().trim().allow(''),
+      lat: Joi.number().min(-90).max(90).allow(null, ''),
+      lng: Joi.number().min(-180).max(180).allow(null, ''),
+      radiusKm: Joi.number().positive().max(500).allow(null, ''),
+      sort: Joi.string().valid('newest', 'price_asc', 'price_desc', 'nearest').default('newest'),
+    });
+  }
+
+  static ValidateCreate(data) {
+    return this.create().validate(data, { abortEarly: false, stripUnknown: true });
+  }
+
+  static ValidateUpdate(data) {
+    return this.update().validate(data, { abortEarly: false, stripUnknown: true });
+  }
+
+  static ValidateList(query) {
+    return this.list().validate(query, { abortEarly: false, stripUnknown: true });
+  }
+}
+
+module.exports = materialListingValidation;

@@ -1,0 +1,25 @@
+const express = require('express');
+const CAP = require("../../constants/capability.constants");
+const authRoutes = require('./Auth.routes');
+const twaFaRoutes = require('./Twofa.routes');
+const userConsentRoutes = require('./Userconsent.routes');
+const auditLogRoutes = require('./Auditlog.routes');
+const rbacRoutes = require('./Rbac.routes');
+const subAdminRoutes = require('./Subadmin.routes');
+const dashboardRoutes = require('./Dashboard.routes');
+const materialCategoryRoutes = require('./MaterialCategory.routes');
+const materialListingRoutes = require('./MaterialListing.routes');
+const transactionHistoryRoutes = require('./TransactionHistory.routes');
+const adminRouter = express.Router();
+adminRouter.use('/', authRoutes);
+adminRouter.use('/', userConsentRoutes);
+adminRouter.use('/', auditLogRoutes);
+adminRouter.use('/', rbacRoutes);
+adminRouter.use('/', subAdminRoutes);
+adminRouter.use('/', twaFaRoutes);
+adminRouter.use('/', dashboardRoutes);
+adminRouter.use('/', materialCategoryRoutes);
+adminRouter.use('/', materialListingRoutes);
+adminRouter.use('/', transactionHistoryRoutes);
+
+module.exports = adminRouter;

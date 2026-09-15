@@ -1,0 +1,153 @@
+const mongoose = require('mongoose');
+const userSchema = new mongoose.Schema({
+    userType: {
+        type: String,
+        enum: ["Buyer", "Seller","ComplianceOfficer"],
+        index: true
+    },
+    profilePicture: {
+        type: String,
+    },
+    fullName: {
+        type: String,
+    },
+    email: {
+        type: String,
+        required: true,
+        trim: true,
+        lowercase: true
+    },
+    gender: {
+        type: String,
+        enum: ["M", "F", "O"]
+    },
+    dob: {
+        type: Date,
+    },
+    password: {
+        type: String,
+    },
+    preferredCurrency: {
+        type: String,
+        uppercase: true,
+        enum: [
+            "USD",
+            "EUR",
+            "AUD",
+            "INR",  
+        ],
+        default: "EUR"
+    },
+    countryOfResidence: {
+        type: String,
+    },
+    mfaEnabled: {
+        type: Boolean,
+        default: false
+    },
+    countryCode: {
+        type: String
+    },
+    phoneNumber: {
+        type: String,
+        default: null
+    },
+    isEmailVerified: {
+        type: Boolean,
+        default: false
+    },
+   
+    // Buyer's saved/shortlisted material listings (was wishlistProjectIds
+    // against the removed `projects` collection). Same shape reused for
+    // the new marketplace domain.
+    savedListingIds: {
+        type: [mongoose.Schema.Types.ObjectId],
+        ref: 'material_listings',
+        default: []
+    },
+    
+    
+    status: {
+        type: String,
+        enum: ["pending", "approved", "rejected","suspended"],
+        default: "approved",
+        index: true
+    },
+    termsCondtions: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "userconsents",
+    },
+    cookiesPolicy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "userconsents",
+    },
+    privacyPolicy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "userconsents",
+    },
+    consentLanguage: {
+        type: String,
+        enum: ["en", "fr"],
+        default: "en"
+    },
+    wallet: {
+        amount: {
+            type: Number,
+            default: 0,
+        },
+        withdrawAmount: {
+            type: Number,
+            default: 0,
+        },
+        currency: {
+            type: String,
+            enum: [
+                "USD",
+                "EUR",
+                "AUD",
+                "INR",
+            ],
+            default: "EUR"
+        },
+    },
+    inactivityDate: {
+        type: Date
+    },
+    is_deleted: {
+        type: String,
+        enum: ["0", "1"],
+        default: "0",
+        index: true,
+    },
+    failedLoginAttempts: {
+        type: Number,
+        default: 0
+    },
+    lockUntil: {
+        type: Date,
+        default: null
+    },
+    lastFailedLoginAt: {
+        type: Date,
+        default: null,
+    },
+   
+}, {
+    timestamps: true
+});
+userSchema.index(
+    { email: 1 },
+    {
+        unique: true,
+        partialFilterExpression: {
+            is_deleted: "0",
+        },
+    }
+);
+userSchema.pre("validate", function (next) {
+    if (this.email) {
+        this.email = this.email.trim().toLowerCase();
+    }
+    next();
+});
+module.exports = userSchema;
