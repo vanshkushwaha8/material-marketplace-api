@@ -177,11 +177,17 @@ const startServer = async () => {
           }, Number(configenv.AUDIT_EXPORT_CLEANUP_INTERVAL_MS));
         }
 
-        // NOTE: reconciliation-match job removed — matched settlement
-        // records against investment.model, which no longer exists.
-        // Phase 3 (transactions/settlement) should reintroduce an
-        // equivalent job matching against the new Transaction model.
-
+               const { expireStaleOffers } = require('./service/app/offer.service');
+        const { expireStaleReservations } = require('./service/app/transaction.service');
+        cron.schedule("*/15 * * * *", async () => {
+          try {
+            const offerResult = await expireStaleOffers();
+            const reservationResult = await expireStaleReservations();
+            console.log(`Offer expiry sweep — offers: ${offerResult.modified}, reservations released: ${reservationResult.released}`);
+          } catch (err) {
+            console.error("Offer/reservation expiry sweep failed:", err);
+          }
+        });
         // NOTE: SLA-escalation job removed along with the withdrawal/
         // recon-exception money-ops modules it escalated for.
         /*****************************delete temp upload cleanup */

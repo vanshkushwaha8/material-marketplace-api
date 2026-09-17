@@ -42,6 +42,9 @@ const materialListingSchema = new mongoose.Schema(
     condition: { type: String, enum: Object.values(CONDITION_TYPES), required: true },
 
     quantity: { type: Number, required: true, min: 0 },
+    availableQuantity: { type: Number, min: 0 },
+    reservedQuantity: { type: Number, default: 0, min: 0 },
+    soldQuantity: { type: Number, default: 0, min: 0 },
     unit: { type: String, enum: MATERIAL_UNITS, required: true },
 
     price: { type: Number, required: true, min: 0 },
@@ -100,5 +103,12 @@ const materialListingSchema = new mongoose.Schema(
 materialListingSchema.index({ title: 'text', description: 'text', brand: 'text' });
 materialListingSchema.index({ 'location.geo': '2dsphere' });
 materialListingSchema.index({ status: 1, verificationStatus: 1, category: 1, price: 1, createdAt: -1 });
-
+// New listings start fully available; existing listings are backfilled
+// by scripts/backfillListingInventory.js.
+materialListingSchema.pre('validate', function (next) {
+  if (this.isNew && this.availableQuantity == null) {
+    this.availableQuantity = this.quantity;
+  }
+  next();
+});
 module.exports = materialListingSchema;

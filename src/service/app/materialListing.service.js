@@ -175,9 +175,19 @@ async function updateListing({ sellerId, listingId, body, req }) {
   }
   if (body.subcategory !== undefined) listing.subcategory = body.subcategory || null;
 
-  const directFields = ['title', 'description', 'brand', 'condition', 'quantity', 'unit', 'price', 'currency', 'negotiable', 'manufacturingDate', 'purchaseDate'];
+    const directFields = ['title', 'description', 'brand', 'condition', 'unit', 'price', 'currency', 'negotiable', 'manufacturingDate', 'purchaseDate'];
   for (const field of directFields) {
     if (body[field] !== undefined) listing[field] = body[field];
+  }
+  // quantity is handled separately: it can never drop below what's
+  // already reserved/sold, and availableQuantity must move with it.
+  if (body.quantity !== undefined) {
+    const committed = listing.reservedQuantity + listing.soldQuantity;
+    if (body.quantity < committed) {
+      throw new MaterialListingError(`Total quantity cannot be less than the ${committed} ${listing.unit} already reserved or sold`, 409);
+    }
+    listing.availableQuantity = body.quantity - committed;
+    listing.quantity = body.quantity;
   }
   if (body.location) listing.location = buildLocation(body);
 

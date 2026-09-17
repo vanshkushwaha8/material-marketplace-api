@@ -6,7 +6,8 @@ const { LISTING_STATES } = require('../../constants/materialListing.constants');
 const { OFFER_STATES, OFFER_TERMINAL_STATES, DEFAULT_OFFER_EXPIRY_HOURS } = require('../../constants/offer.constants');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
-
+const transactionModel = require('../../model/transaction.model');
+const { TRANSACTION_STATES, RESERVATION_EXPIRY_HOURS } = require('../../constants/transaction.constants')
 class OfferError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -27,7 +28,8 @@ async function createOffer({ buyerId, body, req }) {
   if (!listing) throw new OfferError('Listing not found', 404);
   if (listing.status !== LISTING_STATES.LIVE) throw new OfferError('This listing is not currently accepting offers', 409);
   if (String(listing.seller) === String(buyerId)) throw new OfferError('You cannot make an offer on your own listing', 403);
-  if (body.quantity > listing.quantity) throw new OfferError(`Only ${listing.quantity} ${listing.unit} available`, 400);
+  const available = listing.availableQuantity ?? listing.quantity;
+  if (body.quantity > available) throw new OfferError(`Only ${available} ${listing.unit} available`, 400);
   if (!listing.negotiable && Number(body.amount) !== Number(listing.price)) {
     throw new OfferError('This listing is not negotiable — offer must match the listed price', 400);
   }
@@ -83,8 +85,13 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
       throw new OfferError('Waiting on the other party to respond to your last offer', 409);
     }
     if (action === 'ACCEPT') {
+      const listing = await reserveInventoryForAccept(offer, req);
       offer.status = OFFER_STATES.ACCEPTED;
       offer.history.push({ action: 'ACCEPT', by: role, amount: offer.currentAmount, message: message || '' });
+      await offer.save();
+      await createTransactionForAccept(offer, listing, req);
+      await createAuditLog({ req, userId, action: auditLogConstants.OFFER_ACCEPTED, entity: 'offers', entityId: offer._id });
+      return offer;
     } else if (action === 'COUNTER') {
       offer.status = OFFER_STATES.COUNTERED;
       offer.currentAmount = amount;
@@ -106,6 +113,57 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
   return offer;
 }
 
+// Atomic single-document update — no reservation is possible unless
+// enough availableQuantity exists at the instant of the update, which is
+// what prevents two buyers from both reserving the same units.
+async function reserveInventoryForAccept(offer, req) {
+  const listing = await materialListingModel.findOneAndUpdate(
+    { _id: offer.listing, availableQuantity: { $gte: offer.quantity }, is_deleted: deleteConstants.NOT_DELETED },
+    { $inc: { availableQuantity: -offer.quantity, reservedQuantity: offer.quantity } },
+    { new: true }
+  );
+  if (!listing) {
+    throw new OfferError('Not enough inventory remaining to accept this offer', 409);
+  }
+  await createAuditLog({ req, userId: offer.seller, action: auditLogConstants.INVENTORY_RESERVED, entity: 'material_listings', entityId: listing._id, metadata: { offerId: offer._id, quantity: offer.quantity } });
+
+  if (listing.availableQuantity === 0 && listing.status === LISTING_STATES.LIVE) {
+    listing.status = LISTING_STATES.SOLD_OUT;
+    listing.stateHistory.push({ fromStatus: LISTING_STATES.LIVE, toStatus: LISTING_STATES.SOLD_OUT, changedByType: 'system', reason: 'Available quantity reached zero' });
+    await listing.save();
+    await createAuditLog({ req, userId: offer.seller, action: auditLogConstants.LISTING_SOLD_OUT, entity: 'material_listings', entityId: listing._id });
+  }
+  return listing;
+}
+
+// Compensates the reservation above if transaction creation fails, since
+// this project doesn't use multi-document Mongo transactions elsewhere —
+// this keeps listing inventory as the single source of truth even without one.
+async function createTransactionForAccept(offer, listing, req) {
+  try {
+    const transaction = await transactionModel.create({
+      listing: listing._id,
+      offer: offer._id,
+      buyer: offer.buyer,
+      seller: offer.seller,
+      agreedQuantity: offer.quantity,
+      agreedAmount: offer.currentAmount,
+      unitPrice: Number((offer.currentAmount / offer.quantity).toFixed(2)),
+      status: TRANSACTION_STATES.PAYMENT_PENDING,
+      reservationExpiresAt: new Date(Date.now() + RESERVATION_EXPIRY_HOURS * 60 * 60 * 1000),
+      history: [{ action: 'CREATED', by: 'system', note: 'Created on offer acceptance' }],
+    });
+    await createAuditLog({ req, userId: offer.seller, action: auditLogConstants.TRANSACTION_CREATED, entity: 'transactions', entityId: transaction._id });
+    return transaction;
+  } catch (err) {
+    await materialListingModel.updateOne(
+      { _id: listing._id },
+      { $inc: { availableQuantity: offer.quantity, reservedQuantity: -offer.quantity }, ...(listing.status === LISTING_STATES.SOLD_OUT ? { status: LISTING_STATES.LIVE } : {}) }
+    );
+    throw err;
+  }
+}
+
 async function getOne({ offerId, userId, isAdmin }) {
   if (!mongoose.Types.ObjectId.isValid(offerId)) throw new OfferError('Invalid offer id', 404);
   const offer = await offerModel.findOne({ _id: offerId, is_deleted: deleteConstants.NOT_DELETED }).populate('listing', 'title images price unit');
@@ -120,10 +178,16 @@ async function myOffers({ userId, role, status, page = 1, limit = 20 }) {
   if (status) query.status = status;
   const pageNum = Math.max(1, Number(page) || 1);
   const pageLimit = Math.min(100, Number(limit) || 20);
-  const [getData, count] = await Promise.all([
+    const [rows, count] = await Promise.all([
     offerModel.find(query).populate('listing', 'title images price unit status').sort({ updatedAt: -1 }).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
     offerModel.countDocuments(query),
   ]);
+  const acceptedIds = rows.filter((o) => o.status === OFFER_STATES.ACCEPTED).map((o) => o._id);
+  const transactions = acceptedIds.length
+    ? await transactionModel.find({ offer: { $in: acceptedIds } }).select('offer status').lean()
+    : [];
+  const txByOfferId = new Map(transactions.map((t) => [String(t.offer), t]));
+  const getData = rows.map((o) => ({ ...o, transaction: txByOfferId.get(String(o._id)) || null }));
   return { getData, count, page: pageNum, limit: pageLimit };
 }
 

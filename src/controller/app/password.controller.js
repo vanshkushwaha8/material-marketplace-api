@@ -217,13 +217,13 @@ class passwordController {
             }
             const tokenHash = helper.hashToken(token);
             const verifyOtp = await verificationModel.findOne({ tokenHash });
-            let twoFaPath = '/seller/two-factor-auth';
+            let twoFaPath = '/buyer/two-factor-auth';
             let verifiedUser = null;
             if (verifyOtp?.userId) {
                 try {
                     verifiedUser = await userModel.findById(verifyOtp.userId);
-                    if (verifiedUser?.userType === userTypeConstants.Seller) twoFaPath = '/buyer/two-factor-auth';
-                } catch { /* keep the investor default on lookup failure */ }
+                    if (verifiedUser?.userType === userTypeConstants.Seller) twoFaPath = '/seller/two-factor-auth';
+                } catch { /* keep the buyer default on lookup failure */ }
             }
             const buildAuthedContinueUrl = async () => {
                 if (!verifiedUser) return `${configenv.FRONTEND_URL}${twoFaPath}`;

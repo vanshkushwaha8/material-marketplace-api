@@ -19,6 +19,7 @@ const sessionSchema = new mongoose.Schema(
             type: Date,
             default: () => new Date(Date.now() + 24 * 60 * 60 * 1000)
         },
+        mfaVerified: { type: Boolean, default: false },
     },
     { timestamps: true }
 );

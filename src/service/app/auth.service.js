@@ -88,7 +88,7 @@ authService.login = async (request, userData) => {
         request.socket.remoteAddress ||
         request.ip;
     const hashToken = await helper.hashToken(token)
-    await sessionModel.create({ userId: userData?._id, token: hashToken, ipAddress: ipAddress })
+    await sessionModel.create({ userId: userData?._id, token: hashToken, ipAddress: ipAddress, mfaVerified: true })
     const rounds = bcrypt.getRounds(userData?.password);
     if (request?.body?.password && rounds < configenv.COST_FACTOR) {
         const password = await bcrypt.hash(request.body.password, configenv.COST_FACTOR);

@@ -142,6 +142,7 @@ const authMiddleware = (allowedRoles = []) => {
                 clearAuthCookie(response);
                 return responseConstants.unauthorized(response, "Your session is expired. Please login again", statusCodes.UNAUTHORIZED);
             }
+            request.session = sessionData;
             if (sessionData.ipAddress && ipAddress && sessionData.ipAddress !== ipAddress) {
                 await sessionModel.findByIdAndUpdate(sessionData._id, { ipAddress });
                 logger.warn("Session used from a new IP", {
@@ -277,7 +278,7 @@ const consentEnforced = async (request, response, nextFunction) => {
 const twoFactorAuthenticationCheck = async (request, response, nextFunction) => {
     try {
         const user = request?.auth;
-        if (!user?.mfaEnabled) {
+        if (user?.mfaEnabled && !request?.session?.mfaVerified) {
             await createAuditLog({
                 req: request, userId: request?.auth?._id,
                 action: auditLogConstants.TWOFA_NOT_SETUP,
