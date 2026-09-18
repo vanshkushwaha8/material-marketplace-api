@@ -9,7 +9,7 @@ const buyerAuth = [authMiddleware([userTypeConstants.Buyer]), twoFactorAuthentic
 const sellerAuth = [authMiddleware([userTypeConstants.Seller]), twoFactorAuthenticationCheck];
 const eitherAuth = [authMiddleware([userTypeConstants.Buyer, userTypeConstants.Seller]), twoFactorAuthenticationCheck];
 
-// router.post('/transactions/:id/confirm-payment', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...buyerAuth, transactionController.confirmPayment);
+router.post('/transactions/:id/cancel', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...buyerAuth, transactionController.cancel);
 router.post('/transactions/:id/handover', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...sellerAuth, transactionController.markHandover);
 router.post('/transactions/:id/confirm-receipt', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...buyerAuth, transactionController.confirmReceipt);
 router.post('/transactions/:id/dispute', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...eitherAuth, transactionController.raiseDispute);

@@ -94,10 +94,29 @@ function getSanctionsAdapter() {
   }
   return new ManualSanctionsAdapter();
 }
+// Real payment order-creation/verification/webhook path. Deliberately does
+// NOT silently fall back to ManualPaymentAdapter when Razorpay credentials
+// are missing — that fallback used to mean a misconfigured production
+// deploy would quietly accept ManualPaymentAdapter's trivially-forgeable
+// "signature" (a string-prefix check) for real buyer payments. Manual
+// testing now only ever happens through the explicit, env-gated
+// createManualTestPayment() path below, which calls getManualTestPaymentAdapter()
+// directly and never through this function.
 function getPaymentAdapter() {
-  if (configenv.PAYMENT_PROVIDER === 'razorpay' && configenv.PAYMENT_KEY_ID && configenv.PAYMENT_KEY_SECRET) {
+  if (configenv.PAYMENT_PROVIDER === 'razorpay') {
+    if (!configenv.PAYMENT_KEY_ID || !configenv.PAYMENT_KEY_SECRET) {
+      throw new Error('Payment gateway not configured: PAYMENT_KEY_ID/PAYMENT_KEY_SECRET are missing');
+    }
     return new RazorpayPaymentAdapter();
   }
+  throw new Error(`Unsupported or unconfigured PAYMENT_PROVIDER: "${configenv.PAYMENT_PROVIDER || ''}"`);
+}
+
+// Used ONLY by payment.service.js#createManualTestPayment, itself gated by
+// ENABLE_MANUAL_PAYMENT_TEST (which is hard-false in production). Kept as a
+// separate accessor so the real getPaymentAdapter() above can never resolve
+// to it by accident.
+function getManualTestPaymentAdapter() {
   return new ManualPaymentAdapter();
 }
 function getPayoutAdapter() {
@@ -106,4 +125,4 @@ function getPayoutAdapter() {
   }
   return new ManualPayoutAdapter();
 }
-module.exports = { getPspAdapter, getSanctionsAdapter,getPaymentAdapter, getPayoutAdapter };
+module.exports = { getPspAdapter, getSanctionsAdapter, getPaymentAdapter, getManualTestPaymentAdapter, getPayoutAdapter };

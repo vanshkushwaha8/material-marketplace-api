@@ -13,6 +13,16 @@ class PaymentController {
     }
   };
 
+  manualTestPayment = async (request, response, nextFunction) => {
+    try {
+      const payment = await paymentService.createManualTestPayment({ transactionId: request.params.id, buyerId: request.auth._id, req: request });
+      return responseConstants.success(response, 'Test payment successful — no real money was charged', payment, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof paymentService.PaymentError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      nextFunction(error);
+    }
+  };
+
   verify = async (request, response, nextFunction) => {
     try {
       const { providerOrderId, providerPaymentId, signature } = request.body;

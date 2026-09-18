@@ -4,7 +4,7 @@ const materialListingModel = require('../../model/materialListing.model');
 const deleteConstants = require('../../constants/delete.constants');
 const { LISTING_STATES } = require('../../constants/materialListing.constants');
 const { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES } = require('../../constants/transaction.constants');
-const { createAuditLog } = require('../../helper/audit.helper');
+const { createAuditLog, createAuditLogAdmin } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const configenv = require('../../config/env.config');
 const { toPaise, fromPaise, calculateCommissionPaise } = require('../../helper/money.helper');
@@ -59,11 +59,22 @@ async function markPaymentConfirmed({ transactionId, req }) {
   );
   await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.INVENTORY_SOLD, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
 
+  // Commission rate/amount is snapshotted HERE — when the buyer's payment
+  // is actually confirmed, i.e. the moment the transaction becomes
+  // financially committed (spec "COMMISSION RATE SNAPSHOT") — not later at
+  // buyer-confirmation/completion. A platform rate change between payment
+  // and handover/completion must never retroactively change what this
+  // specific transaction owes.
+  const { pct, commission, settlement } = calculateCommission(txn.agreedAmount);
+  txn.platformCommissionPct = pct;
+  txn.platformCommissionAmount = commission;
+  txn.sellerSettlementAmount = settlement;
+
   txn.status = TRANSACTION_STATES.PAYMENT_CONFIRMED;
   txn.paymentConfirmedAt = new Date();
   txn.history.push({ action: 'PAYMENT_CONFIRMED', by: 'system' });
   await txn.save();
-  await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'transactions', entityId: txn._id });
+  await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'transactions', entityId: txn._id, metadata: { commission, settlement } });
   return txn;
 }
 
@@ -87,21 +98,90 @@ async function confirmReceipt({ transactionId, userId, req }) {
   if (txn.status !== TRANSACTION_STATES.HANDOVER_STARTED) {
     throw new TransactionError(`Cannot confirm receipt from status ${txn.status}`, 409);
   }
-  const { pct, commission, settlement } = calculateCommission(txn.agreedAmount);
+  // Commission/settlement were already snapshotted at payment-confirmation
+  // time (markPaymentConfirmed above) — completion just uses those frozen
+  // values rather than recomputing against whatever the platform rate
+  // happens to be right now.
   txn.buyerConfirmedAt = new Date();
   txn.completedAt = new Date();
   txn.status = TRANSACTION_STATES.COMPLETED;
-  txn.platformCommissionPct = pct;
-    txn.platformCommissionAmount = commission;
-  txn.sellerSettlementAmount = settlement;
   // Not RELEASED yet — release now waits on payout eligibility and an
   // actual successful payout (payout.service.js#markPayoutPaid sets this).
   txn.settlementStatus = SETTLEMENT_STATES.PENDING;
   txn.history.push({ action: 'BUYER_CONFIRMED', by: 'buyer' }, { action: 'COMPLETED', by: 'system' });
   await txn.save();
-  await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_COMPLETED, entity: 'transactions', entityId: txn._id, metadata: { commission, settlement } });
+  await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_COMPLETED, entity: 'transactions', entityId: txn._id, metadata: { commission: txn.platformCommissionAmount, settlement: txn.sellerSettlementAmount } });
 
   await payoutService.evaluateAndInitiatePayout({ transactionId: txn._id, req });
+  return txn;
+}
+
+// Lets a buyer release inventory early instead of waiting out the full
+// reservation window (spec section 37 lists "transaction cancellation" as
+// a release trigger distinct from expiry). Only reachable before any money
+// has actually moved — once payment is confirmed, cancellation isn't a
+// thing, only dispute/refund are.
+async function cancelTransaction({ transactionId, userId, req }) {
+  const { txn, role } = await getOwned(transactionId, userId);
+  if (role !== 'buyer') throw new TransactionError('Only the buyer can cancel a pending transaction', 403);
+  if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
+    throw new TransactionError(`Cannot cancel a transaction in status ${txn.status}`, 409);
+  }
+  await materialListingModel.updateOne(
+    { _id: txn.listing },
+    { $inc: { availableQuantity: txn.agreedQuantity, reservedQuantity: -txn.agreedQuantity } }
+  );
+  await materialListingModel.updateOne(
+    { _id: txn.listing, status: LISTING_STATES.SOLD_OUT, availableQuantity: { $gt: 0 } },
+    { $set: { status: LISTING_STATES.LIVE } }
+  );
+  txn.status = TRANSACTION_STATES.CANCELLED;
+  txn.history.push({ action: 'CANCELLED', by: 'buyer' });
+  await txn.save();
+  await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_CANCELLED, entity: 'transactions', entityId: txn._id });
+  await createAuditLog({ req, userId, action: auditLogConstants.INVENTORY_RELEASED, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
+  return txn;
+}
+
+// Admin-only resolution of a raised dispute. Never fabricates a payment or
+// settlement outcome itself — RELEASE just clears the hold so the normal
+// payout.evaluateAndInitiatePayout flow (still going through the real
+// payout provider) can proceed; REFUND leaves the money side to the actual
+// admin-initiated-refund flow (payment.service.js#initiateAdminRefund),
+// this only unblocks/records the transaction-side outcome.
+async function resolveDispute({ transactionId, adminId, resolution, note, req }) {
+  if (!mongoose.Types.ObjectId.isValid(transactionId)) throw new TransactionError('Invalid transaction id', 404);
+  const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
+  if (!txn) throw new TransactionError('Transaction not found', 404);
+  if (txn.status !== TRANSACTION_STATES.DISPUTED) {
+    throw new TransactionError(`Transaction is not under dispute (status ${txn.status})`, 409);
+  }
+  if (!['RELEASE', 'REFUND'].includes(resolution)) throw new TransactionError('resolution must be RELEASE or REFUND', 400);
+
+  txn.disputed = false;
+  if (resolution === 'RELEASE') {
+    // Back to the state it was in before the dispute interrupted it —
+    // buyer had already confirmed receipt if commission/settlement were
+    // already snapshotted (payment was confirmed), otherwise back to
+    // awaiting handover.
+    txn.status = txn.completedAt ? TRANSACTION_STATES.COMPLETED : TRANSACTION_STATES.HANDOVER_STARTED;
+    txn.settlementStatus = SETTLEMENT_STATES.PENDING;
+    txn.history.push({ action: 'DISPUTE_RESOLVED', by: 'admin', note: `RELEASE — ${note || ''}` });
+    await txn.save();
+    await createAuditLogAdmin({ req, adminId, action: auditLogConstants.DISPUTE_RESOLVED, entity: 'transactions', entityId: txn._id, metadata: { resolution, note } });
+    if (txn.status === TRANSACTION_STATES.COMPLETED) {
+      await payoutService.evaluateAndInitiatePayout({ transactionId: txn._id, req });
+    }
+  } else {
+    // REFUND: settlement stays on hold — an admin must separately call the
+    // real provider refund endpoint; this just records the resolution and
+    // keeps the transaction out of DISPUTED limbo (still not eligible for
+    // payout since it's now on its way to REFUNDED via the refund webhook).
+    txn.settlementStatus = SETTLEMENT_STATES.ON_HOLD;
+    txn.history.push({ action: 'DISPUTE_RESOLVED', by: 'admin', note: `REFUND — ${note || ''}` });
+    await txn.save();
+    await createAuditLogAdmin({ req, adminId, action: auditLogConstants.DISPUTE_RESOLVED, entity: 'transactions', entityId: txn._id, metadata: { resolution, note } });
+  }
   return txn;
 }
 
@@ -159,11 +239,13 @@ async function expireStaleReservations() {
     txn.status = TRANSACTION_STATES.CANCELLED;
     txn.history.push({ action: 'RESERVATION_EXPIRED', by: 'system' });
     await txn.save();
+    await createAuditLog({ userId: txn.buyer, action: auditLogConstants.RESERVATION_EXPIRED, entity: 'transactions', entityId: txn._id });
+    await createAuditLog({ userId: txn.buyer, action: auditLogConstants.INVENTORY_RELEASED, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
   }
   return { released: stale.length };
 }
 
 module.exports = {
   TransactionError, calculateCommission, markPaymentConfirmed, markHandover,
-  confirmReceipt, raiseDispute, getOne, myTransactions, expireStaleReservations,
+  confirmReceipt, cancelTransaction, resolveDispute, raiseDispute, getOne, myTransactions, expireStaleReservations,
 };

@@ -7,5 +7,6 @@ const PERMISSIONSCONSTANTS = require('../../constants/permission.constant');
 const router = express.Router();
 
 router.get('/payment-history', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), adminMiddleWare, permissionMiddleware(PERMISSIONSCONSTANTS.TRANSACTIONHISTORY.PAYMENT_HISTORY_VIEW), adminPaymentController.list);
+router.post('/payments/:id/refund', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 20 }), adminMiddleWare, permissionMiddleware(PERMISSIONSCONSTANTS.TRANSACTIONHISTORY.REFUND_MANAGE), adminPaymentController.refund);
 
 module.exports = router;

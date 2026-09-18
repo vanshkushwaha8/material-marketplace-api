@@ -8,6 +8,7 @@ const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const transactionModel = require('../../model/transaction.model');
 const { TRANSACTION_STATES, RESERVATION_EXPIRY_HOURS } = require('../../constants/transaction.constants')
+const { toPaise, fromPaise, unitPriceFromAmount } = require('../../helper/money.helper');
 class OfferError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -34,8 +35,8 @@ async function createOffer({ buyerId, body, req }) {
   // buyer's total offer amount must equal unitPrice × quantity — comparing
   // amount directly to listing.price (as this used to do) only worked by
   // accident for quantity === 1 and silently under/over-charged everyone else.
-  const expectedTotal = Number((Number(listing.price) * Number(body.quantity)).toFixed(2));
-  if (!listing.negotiable && Number(Number(body.amount).toFixed(2)) !== expectedTotal) {
+  const expectedTotal = fromPaise(Math.round(toPaise(listing.price) * Number(body.quantity)));
+  if (!listing.negotiable && fromPaise(toPaise(body.amount)) !== expectedTotal) {
     throw new OfferError(`This listing is not negotiable — offer must be ₹${expectedTotal} (₹${listing.price}/${listing.unit} × ${body.quantity})`, 400);
   }
 
@@ -55,7 +56,7 @@ async function createOffer({ buyerId, body, req }) {
     currentAmount: body.amount,
     lastActionBy: 'buyer',
     status: OFFER_STATES.PENDING,
-    history: [{ version: 1, action: 'OFFER', by: 'buyer', actorId: buyerId, amount: body.amount, unitPrice: Number((body.amount / body.quantity).toFixed(2)), message: body.message || '' }],
+    history: [{ version: 1, action: 'OFFER', by: 'buyer', actorId: buyerId, amount: body.amount, unitPrice: unitPriceFromAmount(body.amount, body.quantity), message: body.message || '' }],
     expiresAt: new Date(Date.now() + DEFAULT_OFFER_EXPIRY_HOURS * 60 * 60 * 1000),
   });
 
@@ -90,7 +91,7 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
     if (action === 'ACCEPT') {
       const listing = await reserveInventoryForAccept(offer, req);
       offer.status = OFFER_STATES.ACCEPTED;
-      offer.history.push({ version: offer.history.length + 1, action: 'ACCEPT', by: role, actorId: userId, amount: offer.currentAmount, unitPrice: Number((offer.currentAmount / offer.quantity).toFixed(2)), message: message || '' });
+      offer.history.push({ version: offer.history.length + 1, action: 'ACCEPT', by: role, actorId: userId, amount: offer.currentAmount, unitPrice: unitPriceFromAmount(offer.currentAmount, offer.quantity), message: message || '' });
       await offer.save();
       await createTransactionForAccept(offer, listing, req);
       await createAuditLog({ req, userId, action: auditLogConstants.OFFER_ACCEPTED, entity: 'offers', entityId: offer._id });
@@ -99,7 +100,7 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
       offer.status = OFFER_STATES.COUNTERED;
       offer.currentAmount = amount;
       offer.lastActionBy = role;
-      offer.history.push({ version: offer.history.length + 1, action: 'COUNTER', by: role, actorId: userId, amount, unitPrice: Number((amount / offer.quantity).toFixed(2)), message: message || '' });
+      offer.history.push({ version: offer.history.length + 1, action: 'COUNTER', by: role, actorId: userId, amount, unitPrice: unitPriceFromAmount(amount, offer.quantity), message: message || '' });
     } else {
       throw new OfferError('Unknown action');
     }
@@ -151,7 +152,7 @@ async function createTransactionForAccept(offer, listing, req) {
       seller: offer.seller,
       agreedQuantity: offer.quantity,
       agreedAmount: offer.currentAmount,
-      unitPrice: Number((offer.currentAmount / offer.quantity).toFixed(2)),
+      unitPrice: unitPriceFromAmount(offer.currentAmount, offer.quantity),
       status: TRANSACTION_STATES.PAYMENT_PENDING,
       reservationExpiresAt: new Date(Date.now() + RESERVATION_EXPIRY_HOURS * 60 * 60 * 1000),
       history: [{ action: 'CREATED', by: 'system', note: 'Created on offer acceptance' }],

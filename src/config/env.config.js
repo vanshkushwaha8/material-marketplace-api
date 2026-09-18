@@ -96,6 +96,13 @@ const configEnv = {
   PAYMENT_WEBHOOK_SECRET: process.env.PAYMENT_WEBHOOK_SECRET || '',
   PAYMENT_ACCOUNT_ID: process.env.PAYMENT_ACCOUNT_ID || '',
   PAYMENT_MODE: process.env.PAYMENT_MODE || 'test',
+  // Dev/QA-only simulated payment success, bypassing the real gateway.
+  // Must be explicitly enabled AND never available in production, even if
+  // someone leaves the flag on by mistake — belt-and-suspenders per spec
+  // "MANUAL PAYMENT ENVIRONMENT CONTROL" (hiding the frontend button is UX,
+  // this is the actual security boundary). See payment.service.js#createManualTestPayment.
+  ENABLE_MANUAL_PAYMENT_TEST: String(process.env.ENABLE_MANUAL_PAYMENT_TEST || '').toLowerCase() === 'true'
+    && (process.env.NODE_ENV || 'development') !== 'production',
   PAYOUT_PROVIDER: process.env.PAYOUT_PROVIDER || '',
   PAYOUT_ACCOUNT_NUMBER: process.env.PAYOUT_ACCOUNT_NUMBER || '',
   PAYMENT_PROCESSING_FEE_PCT: process.env.PAYMENT_PROCESSING_FEE_PCT || '0',

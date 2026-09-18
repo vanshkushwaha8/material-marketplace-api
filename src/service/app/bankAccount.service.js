@@ -56,11 +56,17 @@ async function verifyBankAccount({ sellerId, req }) {
     account.failureReason = verified ? '' : `Provider returned status: ${status}`;
     account.history.push({ action: verified ? 'VERIFIED' : 'VERIFICATION_FAILED' });
     await account.save();
+    await createAuditLog({
+      req, userId: sellerId,
+      action: verified ? auditLogConstants.BANK_ACCOUNT_VERIFIED : auditLogConstants.BANK_ACCOUNT_VERIFICATION_FAILED,
+      entity: 'seller_bank_accounts', entityId: account._id,
+    });
   } catch (err) {
     account.verificationStatus = BANK_ACCOUNT_STATES.FAILED;
     account.failureReason = err.message;
     account.history.push({ action: 'VERIFICATION_FAILED', note: err.message });
     await account.save();
+    await createAuditLog({ req, userId: sellerId, action: auditLogConstants.BANK_ACCOUNT_VERIFICATION_FAILED, entity: 'seller_bank_accounts', entityId: account._id, metadata: { reason: err.message } });
   }
   return account;
 }

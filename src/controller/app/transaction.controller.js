@@ -4,10 +4,10 @@ const transactionService = require('../../service/app/transaction.service');
 const transactionValidation = require('../../validation/app/transaction.validation');
 
 class TransactionController {
-  confirmPayment = async (request, response, nextFunction) => {
+  cancel = async (request, response, nextFunction) => {
     try {
-      const txn = await transactionService.confirmPayment({ transactionId: request.params.id, userId: request.auth._id, req: request });
-      return responseConstants.success(response, 'Payment confirmed', txn, statusCodes.OK);
+      const txn = await transactionService.cancelTransaction({ transactionId: request.params.id, userId: request.auth._id, req: request });
+      return responseConstants.success(response, 'Transaction cancelled — inventory released', txn, statusCodes.OK);
     } catch (error) {
       if (error instanceof transactionService.TransactionError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
       nextFunction(error);

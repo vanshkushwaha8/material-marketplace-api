@@ -14,4 +14,12 @@ function calculateCommissionPaise(grossAmountPaise, commissionPct) {
   const sellerSettlementPaise = grossAmountPaise - commissionAmountPaise;
   return { commissionAmountPaise, sellerSettlementPaise };
 }
-module.exports = { toPaise, fromPaise, calculateCommissionPaise };
+// amount / quantity, rounded to the nearest paisa via integer math instead
+// of `.toFixed(2)` on a raw float division — same "no unsafe floating point
+// for money" rule money.helper.js exists to centralize, applied to the
+// unit-price-from-total derivation used when an offer/counter is stored.
+function unitPriceFromAmount(amount, quantity) {
+  if (!quantity) return 0;
+  return fromPaise(Math.round(toPaise(amount) / Number(quantity)));
+}
+module.exports = { toPaise, fromPaise, calculateCommissionPaise, unitPriceFromAmount };

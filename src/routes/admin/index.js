@@ -12,6 +12,7 @@ const materialListingRoutes = require('./MaterialListing.routes');
 const transactionHistoryRoutes = require('./TransactionHistory.routes');
 const paymentHistoryRoutes = require('./Payment.routes');
 const commissionHistoryRoutes = require('./Commission.routes');
+const settlementHistoryRoutes = require('./Settlement.routes');
 const adminRouter = express.Router();
 adminRouter.use('/', authRoutes);
 adminRouter.use('/', userConsentRoutes);
@@ -25,5 +26,6 @@ adminRouter.use('/', materialListingRoutes);
 adminRouter.use('/', transactionHistoryRoutes);
 adminRouter.use('/', paymentHistoryRoutes);
 adminRouter.use('/', commissionHistoryRoutes);
+adminRouter.use('/', settlementHistoryRoutes);
 
 module.exports = adminRouter;
