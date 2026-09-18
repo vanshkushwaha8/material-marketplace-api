@@ -215,6 +215,14 @@ class authValidation {
                     'any.only': 'Invalid userType'
                 }),
 
+            buyerType: Joi.string()
+                .valid('Homeowner', 'Individual', 'Builder', 'Contractor', 'Business')
+                .optional()
+                .allow('')
+                .messages({
+                    'any.only': 'Invalid buyerType'
+                }),
+
             title: Joi.string()
                 .valid('Mr', 'Mrs', 'Ms', 'Dr', 'Prof')
                 .optional()

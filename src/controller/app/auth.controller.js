@@ -233,6 +233,7 @@ class authController {
       }
       const PROFILE_UPDATE_FIELDS = [
         'userType',
+        'buyerType',
         'title',
         'profilePicture',
         'fullName',

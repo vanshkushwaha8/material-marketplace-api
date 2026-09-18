@@ -212,8 +212,13 @@ async function myTransactions({ userId, role, status, page = 1, limit = 20 }) {
   if (status) query.status = status;
   const pageNum = Math.max(1, Number(page) || 1);
   const pageLimit = Math.min(100, Number(limit) || 20);
+  // Buyer's own list needs the seller's name (Active Purchases/Transactions
+  // UI); seller's own list needs the buyer's name — populate whichever
+  // side isn't "me" (never both, and never email/phone to keep this a
+  // display-only convenience, not a contact-info leak).
+  const counterpartyField = role === 'seller' ? 'buyer' : 'seller';
   const [getData, count] = await Promise.all([
-    transactionModel.find(query).populate('listing', 'title images unit').sort({ updatedAt: -1 }).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
+    transactionModel.find(query).populate('listing', 'title images unit location').populate(counterpartyField, 'fullName').sort({ updatedAt: -1 }).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
     transactionModel.countDocuments(query),
   ]);
   return { getData, count, page: pageNum, limit: pageLimit };

@@ -5,6 +5,14 @@ const userSchema = new mongoose.Schema({
         enum: ["Buyer", "Seller","ComplianceOfficer"],
         index: true
     },
+    // Buyer-only self-declared profile detail — shown on the buyer account
+    // summary ("Homeowner", "Builder", etc.) so a seller/admin knows the
+    // kind of buyer they're dealing with. Not used for any authorization.
+    buyerType: {
+        type: String,
+        enum: ["Homeowner", "Individual", "Builder", "Contractor", "Business"],
+        default: null,
+    },
     profilePicture: {
         type: String,
     },

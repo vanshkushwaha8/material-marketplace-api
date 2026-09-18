@@ -451,6 +451,8 @@ authService.getProfile = async (request) => {
         email: 1,
         phoneNumber: 1,
         userType: 1,
+        buyerType: 1,
+        isEmailVerified: 1,
         profilePicture: 1,
         title: 1,
         preferredCurrency: 1,
