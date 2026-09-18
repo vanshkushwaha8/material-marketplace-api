@@ -30,8 +30,13 @@ async function createOffer({ buyerId, body, req }) {
   if (String(listing.seller) === String(buyerId)) throw new OfferError('You cannot make an offer on your own listing', 403);
   const available = listing.availableQuantity ?? listing.quantity;
   if (body.quantity > available) throw new OfferError(`Only ${available} ${listing.unit} available`, 400);
-  if (!listing.negotiable && Number(body.amount) !== Number(listing.price)) {
-    throw new OfferError('This listing is not negotiable — offer must match the listed price', 400);
+  // listing.price is always PRICE PER UNIT. For a non-negotiable listing the
+  // buyer's total offer amount must equal unitPrice × quantity — comparing
+  // amount directly to listing.price (as this used to do) only worked by
+  // accident for quantity === 1 and silently under/over-charged everyone else.
+  const expectedTotal = Number((Number(listing.price) * Number(body.quantity)).toFixed(2));
+  if (!listing.negotiable && Number(Number(body.amount).toFixed(2)) !== expectedTotal) {
+    throw new OfferError(`This listing is not negotiable — offer must be ₹${expectedTotal} (₹${listing.price}/${listing.unit} × ${body.quantity})`, 400);
   }
 
   const existing = await offerModel.findOne({
