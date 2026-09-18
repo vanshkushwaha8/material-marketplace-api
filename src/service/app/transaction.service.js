@@ -7,7 +7,8 @@ const { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES } = r
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const configenv = require('../../config/env.config');
-
+const { toPaise, fromPaise, calculateCommissionPaise } = require('../../helper/money.helper');
+const payoutService = require('./payout.service');
 class TransactionError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -35,32 +36,34 @@ async function getOwned(transactionId, userId) {
 // at more than one call site — spec section "8.9% PLATFORM COMMISSION".
 function calculateCommission(amount) {
   const pct = Number(configenv.MARKETPLACE_COMMISSION_PCT);
-  const commission = Math.round(amount * (pct / 100) * 100) / 100;
-  return { pct, commission, settlement: Math.round((amount - commission) * 100) / 100 };
+  const { commissionAmountPaise, sellerSettlementPaise } = calculateCommissionPaise(toPaise(amount), pct);
+  return { pct, commission: fromPaise(commissionAmountPaise), settlement: fromPaise(sellerSettlementPaise) };
 }
 
-// Manual/buyer-attested confirmation — this codebase has no live payment
-// gateway for marketplace checkout yet (see ManualPspAdapter for the
-// equivalent pattern in the investor-payout domain). Reserved -> Sold
-// happens here, per the spec's numeric example under CORE INVENTORY MODEL.
-async function confirmPayment({ transactionId, userId, req }) {
-  const { txn, role } = await getOwned(transactionId, userId);
-  if (role !== 'buyer') throw new TransactionError('Only the buyer can confirm payment', 403);
+// Called ONLY from payment.service.js — after the provider has verified
+// the payment (checkout callback or webhook), never directly by the
+// buyer. Reserved -> Sold happens here, per the spec's numeric example
+// under CORE INVENTORY MODEL. Idempotent: re-checks status before acting,
+// since payment.service.js may call this from both the callback and a
+// racing webhook for the same payment.
+async function markPaymentConfirmed({ transactionId, req }) {
+  const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
+  if (!txn) throw new TransactionError('Transaction not found', 404);
   if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
-    throw new TransactionError(`Cannot confirm payment from status ${txn.status}`, 409);
+    return txn; // already confirmed by the other racing path — no-op
   }
 
   await materialListingModel.updateOne(
     { _id: txn.listing },
     { $inc: { reservedQuantity: -txn.agreedQuantity, soldQuantity: txn.agreedQuantity } }
   );
-  await createAuditLog({ req, userId, action: auditLogConstants.INVENTORY_SOLD, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
+  await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.INVENTORY_SOLD, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
 
   txn.status = TRANSACTION_STATES.PAYMENT_CONFIRMED;
   txn.paymentConfirmedAt = new Date();
-  txn.history.push({ action: 'PAYMENT_CONFIRMED', by: 'buyer' });
+  txn.history.push({ action: 'PAYMENT_CONFIRMED', by: 'system' });
   await txn.save();
-  await createAuditLog({ req, userId, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'transactions', entityId: txn._id });
+  await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'transactions', entityId: txn._id });
   return txn;
 }
 
@@ -89,12 +92,16 @@ async function confirmReceipt({ transactionId, userId, req }) {
   txn.completedAt = new Date();
   txn.status = TRANSACTION_STATES.COMPLETED;
   txn.platformCommissionPct = pct;
-  txn.platformCommissionAmount = commission;
+    txn.platformCommissionAmount = commission;
   txn.sellerSettlementAmount = settlement;
-  txn.settlementStatus = SETTLEMENT_STATES.RELEASED;
+  // Not RELEASED yet — release now waits on payout eligibility and an
+  // actual successful payout (payout.service.js#markPayoutPaid sets this).
+  txn.settlementStatus = SETTLEMENT_STATES.PENDING;
   txn.history.push({ action: 'BUYER_CONFIRMED', by: 'buyer' }, { action: 'COMPLETED', by: 'system' });
   await txn.save();
   await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_COMPLETED, entity: 'transactions', entityId: txn._id, metadata: { commission, settlement } });
+
+  await payoutService.evaluateAndInitiatePayout({ transactionId: txn._id, req });
   return txn;
 }
 
@@ -157,6 +164,6 @@ async function expireStaleReservations() {
 }
 
 module.exports = {
-  TransactionError, calculateCommission, confirmPayment, markHandover,
+  TransactionError, calculateCommission, markPaymentConfirmed, markHandover,
   confirmReceipt, raiseDispute, getOne, myTransactions, expireStaleReservations,
 };

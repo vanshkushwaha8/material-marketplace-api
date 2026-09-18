@@ -19,11 +19,14 @@ const offerSchema = new mongoose.Schema(
 
     status: { type: String, enum: Object.values(OFFER_STATES), default: OFFER_STATES.PENDING, index: true },
 
-    history: [
+        history: [
       {
+        version: { type: Number, required: true },
         action: { type: String, enum: ['OFFER', 'COUNTER', 'ACCEPT', 'REJECT', 'CANCEL', 'EXPIRE'], required: true },
         by: { type: String, enum: ['buyer', 'seller', 'system'], required: true },
+        actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'users', default: null },
         amount: { type: Number, default: null },
+        unitPrice: { type: Number, default: null },
         message: { type: String, trim: true, default: '' },
         at: { type: Date, default: Date.now },
       },

@@ -10,6 +10,8 @@ const dashboardRoutes = require('./Dashboard.routes');
 const materialCategoryRoutes = require('./MaterialCategory.routes');
 const materialListingRoutes = require('./MaterialListing.routes');
 const transactionHistoryRoutes = require('./TransactionHistory.routes');
+const paymentHistoryRoutes = require('./Payment.routes');
+const commissionHistoryRoutes = require('./Commission.routes');
 const adminRouter = express.Router();
 adminRouter.use('/', authRoutes);
 adminRouter.use('/', userConsentRoutes);
@@ -21,5 +23,7 @@ adminRouter.use('/', dashboardRoutes);
 adminRouter.use('/', materialCategoryRoutes);
 adminRouter.use('/', materialListingRoutes);
 adminRouter.use('/', transactionHistoryRoutes);
+adminRouter.use('/', paymentHistoryRoutes);
+adminRouter.use('/', commissionHistoryRoutes);
 
 module.exports = adminRouter;

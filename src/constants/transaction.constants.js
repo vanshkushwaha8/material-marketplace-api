@@ -1,3 +1,5 @@
+const configenv = require('../config/env.config');
+
 const TRANSACTION_STATES = Object.freeze({
   PAYMENT_PENDING: 'PAYMENT_PENDING',
   PAYMENT_CONFIRMED: 'PAYMENT_CONFIRMED',
@@ -26,6 +28,6 @@ const SETTLEMENT_STATES = Object.freeze({
 // Mirrors offer.constants.js' DEFAULT_OFFER_EXPIRY_HOURS convention —
 // how long inventory stays reserved for an accepted offer before the
 // reservation is released back to available stock.
-const RESERVATION_EXPIRY_HOURS = Number(process.env.RESERVATION_EXPIRY_HOURS) || 48;
+const RESERVATION_EXPIRY_HOURS = Number(configenv.RESERVATION_EXPIRY_HOURS) || 48;
 
 module.exports = { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES, RESERVATION_EXPIRY_HOURS };

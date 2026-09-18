@@ -16,6 +16,7 @@ const transactionSchema = new mongoose.Schema(
     agreedQuantity: { type: Number, required: true, min: 0 },
     agreedAmount: { type: Number, required: true, min: 0 },
     unitPrice: { type: Number, required: true, min: 0 },
+        currency: { type: String, default: 'INR' },
 
     status: { type: String, enum: Object.values(TRANSACTION_STATES), default: TRANSACTION_STATES.PAYMENT_PENDING, index: true },
 

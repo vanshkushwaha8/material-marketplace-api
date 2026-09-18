@@ -216,6 +216,9 @@ const PERMISSIONSCONSTANTS = {
     },
     TRANSACTIONHISTORY: {
         TRANSACTION_HISTORY_VIEW: 'manageTransactionHistoryView',
+        PAYMENT_HISTORY_VIEW: 'managePaymentHistoryView',
+        COMMISSION_HISTORY_VIEW: 'manageCommissionHistoryView',
+        REFUND_MANAGE: 'manageRefund',
     },
 };
 module.exports = PERMISSIONSCONSTANTS

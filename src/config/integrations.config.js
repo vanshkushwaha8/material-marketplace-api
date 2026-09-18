@@ -46,7 +46,10 @@
 const configenv = require('./env.config');
 const ManualPspAdapter = require('../adapters/psp/manual.psp.adapter');
 const ManualSanctionsAdapter = require('../adapters/sanctions/manual.sanctions.adapter');
-
+const RazorpayPaymentAdapter = require('../adapters/payment/razorpay.payment.adapter');
+const ManualPaymentAdapter = require('../adapters/payment/manual.payment.adapter');
+const RazorpayXPayoutAdapter = require('../adapters/payout/razorpayx.payout.adapter');
+const ManualPayoutAdapter = require('../adapters/payout/manual.payout.adapter');
 // Vendor adapters are intentionally not required here — per the
 // implementation blueprint's own recommended build order, they're only
 // written once a vendor is actually contracted (nothing to test against
@@ -91,5 +94,16 @@ function getSanctionsAdapter() {
   }
   return new ManualSanctionsAdapter();
 }
-
-module.exports = { getPspAdapter, getSanctionsAdapter };
+function getPaymentAdapter() {
+  if (configenv.PAYMENT_PROVIDER === 'razorpay' && configenv.PAYMENT_KEY_ID && configenv.PAYMENT_KEY_SECRET) {
+    return new RazorpayPaymentAdapter();
+  }
+  return new ManualPaymentAdapter();
+}
+function getPayoutAdapter() {
+  if (configenv.PAYOUT_PROVIDER === 'razorpayx' && configenv.PAYMENT_KEY_ID && configenv.PAYMENT_KEY_SECRET && configenv.PAYOUT_ACCOUNT_NUMBER) {
+    return new RazorpayXPayoutAdapter();
+  }
+  return new ManualPayoutAdapter();
+}
+module.exports = { getPspAdapter, getSanctionsAdapter,getPaymentAdapter, getPayoutAdapter };

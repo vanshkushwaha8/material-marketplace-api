@@ -50,7 +50,7 @@ async function createOffer({ buyerId, body, req }) {
     currentAmount: body.amount,
     lastActionBy: 'buyer',
     status: OFFER_STATES.PENDING,
-    history: [{ action: 'OFFER', by: 'buyer', amount: body.amount, message: body.message || '' }],
+    history: [{ version: 1, action: 'OFFER', by: 'buyer', actorId: buyerId, amount: body.amount, unitPrice: Number((body.amount / body.quantity).toFixed(2)), message: body.message || '' }],
     expiresAt: new Date(Date.now() + DEFAULT_OFFER_EXPIRY_HOURS * 60 * 60 * 1000),
   });
 
@@ -73,21 +73,19 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
     // Either party can withdraw at any non-terminal point — spec section
     // 18 lists CANCELLED as a distinct terminal state from REJECTED so a
     // withdrawal isn't recorded as if the other side turned it down.
-    offer.status = OFFER_STATES.CANCELLED;
-    offer.history.push({ action: 'CANCEL', by: role, message: message || '' });
+        offer.status = OFFER_STATES.CANCELLED;
+    offer.history.push({ version: offer.history.length + 1, action: 'CANCEL', by: role, actorId: userId, message: message || '' });
   } else if (action === 'REJECT') {
     offer.status = OFFER_STATES.REJECTED;
-    offer.history.push({ action: 'REJECT', by: role, message: message || '' });
+    offer.history.push({ version: offer.history.length + 1, action: 'REJECT', by: role, actorId: userId, message: message || '' });
   } else {
-    // ACCEPT / COUNTER both require it be "the other side's turn" — you
-    // cannot accept or counter your own most recent action.
     if (offer.lastActionBy === role) {
       throw new OfferError('Waiting on the other party to respond to your last offer', 409);
     }
     if (action === 'ACCEPT') {
       const listing = await reserveInventoryForAccept(offer, req);
       offer.status = OFFER_STATES.ACCEPTED;
-      offer.history.push({ action: 'ACCEPT', by: role, amount: offer.currentAmount, message: message || '' });
+      offer.history.push({ version: offer.history.length + 1, action: 'ACCEPT', by: role, actorId: userId, amount: offer.currentAmount, unitPrice: Number((offer.currentAmount / offer.quantity).toFixed(2)), message: message || '' });
       await offer.save();
       await createTransactionForAccept(offer, listing, req);
       await createAuditLog({ req, userId, action: auditLogConstants.OFFER_ACCEPTED, entity: 'offers', entityId: offer._id });
@@ -96,7 +94,7 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
       offer.status = OFFER_STATES.COUNTERED;
       offer.currentAmount = amount;
       offer.lastActionBy = role;
-      offer.history.push({ action: 'COUNTER', by: role, amount, message: message || '' });
+      offer.history.push({ version: offer.history.length + 1, action: 'COUNTER', by: role, actorId: userId, amount, unitPrice: Number((amount / offer.quantity).toFixed(2)), message: message || '' });
     } else {
       throw new OfferError('Unknown action');
     }
@@ -183,8 +181,8 @@ async function myOffers({ userId, role, status, page = 1, limit = 20 }) {
     offerModel.countDocuments(query),
   ]);
   const acceptedIds = rows.filter((o) => o.status === OFFER_STATES.ACCEPTED).map((o) => o._id);
-  const transactions = acceptedIds.length
-    ? await transactionModel.find({ offer: { $in: acceptedIds } }).select('offer status').lean()
+    const transactions = acceptedIds.length
+    ? await transactionModel.find({ offer: { $in: acceptedIds } }).select('offer status agreedQuantity agreedAmount unitPrice currency').lean()
     : [];
   const txByOfferId = new Map(transactions.map((t) => [String(t.offer), t]));
   const getData = rows.map((o) => ({ ...o, transaction: txByOfferId.get(String(o._id)) || null }));
