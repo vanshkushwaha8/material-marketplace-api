@@ -316,7 +316,10 @@ async function search(filters) {
       },
     };
     const [rawData, count] = await Promise.all([
-      materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
+      // Seller name is buyer-facing (ListingCard's seller-identity row,
+      // EnquireModal's success message) — only fullName, never email/phone,
+      // to the public search response.
+      materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName').skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
       materialListingModel.countDocuments(query),
     ]);
     return { getData: rawData, count, page: pageNum, limit: pageLimit };
@@ -329,7 +332,7 @@ async function search(filters) {
   };
 
   const [rawData, count] = await Promise.all([
-    materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').sort(sortMap[sort] || sortMap.newest).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
+    materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName').sort(sortMap[sort] || sortMap.newest).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
     materialListingModel.countDocuments(query),
   ]);
   return { getData: rawData, count, page: pageNum, limit: pageLimit };
