@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { SELLER_TYPES } = require('../constants/sellerType.constants');
 const userSchema = new mongoose.Schema({
     userType: {
         type: String,
@@ -12,6 +13,34 @@ const userSchema = new mongoose.Schema({
         type: String,
         enum: ["Homeowner", "Individual", "Builder", "Contractor", "Business"],
         default: null,
+    },
+    // Seller-only. Deliberately a field of its own — NOT folded into
+    // `buyerType` or a single "userType-subtype" string — so it stays
+    // orthogonal to `supplyType` on material_listings (see
+    // materialListing.constants.js). Existing sellers without this set
+    // are backfilled to INDIVIDUAL by scripts/backfillSellerType.js; the
+    // dashboard/listing-creation code must treat a missing value the same
+    // as INDIVIDUAL rather than crashing.
+    sellerType: {
+        type: String,
+        enum: Object.values(SELLER_TYPES),
+        default: null,
+    },
+    // Buyer AND Seller registration both collect this (marketplace is
+    // location-driven — see materialListing.schema.js's own `location`
+    // shape, mirrored here). `geo` is left unset unless real coordinates
+    // are supplied, same reasoning as materialListing.schema.js: an
+    // auto-instantiated `{type:'Point'}` with no coordinates would break
+    // the 2dsphere index.
+    location: {
+        city: { type: String, trim: true, default: '' },
+        state: { type: String, trim: true, default: '' },
+        pincode: { type: String, trim: true, default: '' },
+        area: { type: String, trim: true, default: '' },
+        geo: {
+            type: { type: String, enum: ['Point'], default: 'Point' },
+            coordinates: { type: [Number], default: undefined },
+        },
     },
     profilePicture: {
         type: String,

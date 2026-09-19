@@ -31,7 +31,8 @@ class OfferController {
       return responseConstants.success(response, 'Offer updated', offer, statusCodes.OK);
     } catch (error) {
       if (error instanceof offerService.OfferError) {
-        return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+        const data = error.errorCode ? { code: error.errorCode } : null;
+        return responseConstants.BadRequest(response, error.message, data, error.statusCode);
       }
       nextFunction(error);
     }

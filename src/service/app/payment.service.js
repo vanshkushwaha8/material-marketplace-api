@@ -6,7 +6,7 @@ const transactionModel = require('../../model/transaction.model');
 const payoutModel = require('../../model/payout.model');
 const deleteConstants = require('../../constants/delete.constants');
 const { PAYMENT_STATES } = require('../../constants/payment.constants');
-const { TRANSACTION_STATES } = require('../../constants/transaction.constants');
+const { TRANSACTION_STATES, COMMISSION_STATES } = require('../../constants/transaction.constants');
 const { PAYOUT_STATES } = require('../../constants/payout.constants');
 const { toPaise } = require('../../helper/money.helper');
 const configenv = require('../../config/env.config');
@@ -247,6 +247,10 @@ async function handleWebhook({ rawBody, signature, payload }) {
           const alreadySettled = payout && payout.status === PAYOUT_STATES.PAID;
           const previousStatus = txn.status;
           txn.status = TRANSACTION_STATES.REFUNDED;
+          // Leave a SETTLED commission ledger alone if the seller was
+          // already paid before this refund landed — that mismatch is
+          // exactly what needs admin reconciliation, not a silent flip.
+          if (!alreadySettled) txn.commissionStatus = COMMISSION_STATES.REFUNDED;
           txn.history.push({
             action: 'REFUNDED', by: 'system',
             note: alreadySettled

@@ -1,19 +1,22 @@
 const mongoose = require('mongoose');
 const offerModel = require('../../model/offer.model');
 const materialListingModel = require('../../model/materialListing.model');
+const sellerBankAccountModel = require('../../model/sellerBankAccount.model');
 const deleteConstants = require('../../constants/delete.constants');
 const { LISTING_STATES } = require('../../constants/materialListing.constants');
 const { OFFER_STATES, OFFER_TERMINAL_STATES, DEFAULT_OFFER_EXPIRY_HOURS } = require('../../constants/offer.constants');
+const { BANK_ACCOUNT_STATES } = require('../../constants/payout.constants');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const transactionModel = require('../../model/transaction.model');
 const { TRANSACTION_STATES, RESERVATION_EXPIRY_HOURS } = require('../../constants/transaction.constants')
 const { toPaise, fromPaise, unitPriceFromAmount } = require('../../helper/money.helper');
 class OfferError extends Error {
-  constructor(message, statusCode = 400) {
+  constructor(message, statusCode = 400, errorCode = null) {
     super(message);
     this.name = 'OfferError';
     this.statusCode = statusCode;
+    this.errorCode = errorCode;
   }
 }
 
@@ -89,6 +92,7 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
       throw new OfferError('Waiting on the other party to respond to your last offer', 409);
     }
     if (action === 'ACCEPT') {
+      await assertSellerPayoutReady(offer.seller);
       const listing = await reserveInventoryForAccept(offer, req);
       offer.status = OFFER_STATES.ACCEPTED;
       offer.history.push({ version: offer.history.length + 1, action: 'ACCEPT', by: role, actorId: userId, amount: offer.currentAmount, unitPrice: unitPriceFromAmount(offer.currentAmount, offer.quantity), message: message || '' });
@@ -115,6 +119,23 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
   };
   await createAuditLog({ req, userId, action: auditActionMap[action], entity: 'offers', entityId: offer._id });
   return offer;
+}
+
+// Blocks ACCEPT before any money or inventory moves — a buyer's payment
+// must never be taken for a seller who cannot ultimately be settled.
+// Spec section 5 (critical requirement): the seller needs a verified
+// payout account BEFORE accepting, not merely before the eventual payout
+// (payout.service.js already holds unverified payouts, but that lets a
+// buyer's ₹ sit in limbo indefinitely — better to block it up front).
+async function assertSellerPayoutReady(sellerId) {
+  const bankAccount = await sellerBankAccountModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED });
+  if (!bankAccount || bankAccount.verificationStatus !== BANK_ACCOUNT_STATES.VERIFIED) {
+    throw new OfferError(
+      'Complete payout setup before accepting this offer.',
+      409,
+      'SELLER_PAYOUT_SETUP_REQUIRED'
+    );
+  }
 }
 
 // Atomic single-document update — no reservation is possible unless
