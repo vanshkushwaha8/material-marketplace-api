@@ -63,6 +63,12 @@ authService.register = async (request) => {
     if (body.password) body.password = await helper.createPassword(body.password);
     const builtLocation = body.location ? buildUserLocation(body.location) : undefined;
     if (builtLocation) body.location = builtLocation;
+    // The seller registration form no longer collects this at all
+    // (BUILD MATERIAL only operates in India for sellers) — default it
+    // rather than leaving it unset.
+    if (userType === userTypeConstants.Seller && !body.countryOfResidence) {
+        body.countryOfResidence = 'IN';
+    }
     const userData = await userModel.create(body);
 
     // A Business/Store seller gets a StoreProfile alongside their User
@@ -79,6 +85,9 @@ authService.register = async (request) => {
             categories: body.categories || [],
             pickupAvailable: !!body.pickupAvailable,
             deliveryAvailable: !!body.deliveryAvailable,
+            panNumber: body.panNumber || '',
+            gstRegistered: !!body.gstRegistered,
+            gstin: body.gstRegistered ? (body.gstin || '') : '',
             verificationStatus: STORE_VERIFICATION_STATES.UNVERIFIED,
             history: [{ action: 'CREATED', note: 'Created at registration' }],
         });

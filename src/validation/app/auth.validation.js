@@ -58,10 +58,14 @@ class authValidation {
                     'any.required': 'phoneNumber is required.'
                 }),
 
+            // BUILD MATERIAL only operates in India for sellers — the
+            // seller registration form doesn't collect this at all
+            // (auth.service.js#register defaults it to 'IN'). Still
+            // required for Buyer, unchanged.
             countryOfResidence: Joi.string()
                 .uppercase()
                 .valid(...KNOWN_COUNTRY_CODES)
-                .required()
+                .when('userType', { is: 'Seller', then: Joi.optional(), otherwise: Joi.required() })
                 .messages({
                     'string.empty': 'countryOfResidence is required',
                     'any.only': 'countryOfResidence must be a valid supported country code',
@@ -134,7 +138,10 @@ class authValidation {
             location: Joi.object({
                 city: Joi.string().trim().required().messages({ 'string.empty': 'City is required' }),
                 state: Joi.string().trim().required().messages({ 'string.empty': 'State is required' }),
-                pincode: Joi.string().trim().allow('').optional(),
+                pincode: Joi.string().trim().pattern(/^[0-9]{6}$/).required().messages({
+                    'string.empty': 'Pincode is required',
+                    'string.pattern.base': 'Enter a valid 6-digit pincode',
+                }),
                 area: Joi.string().trim().allow('').optional(),
                 latitude: Joi.number().min(-90).max(90).optional(),
                 longitude: Joi.number().min(-180).max(180).optional(),
@@ -160,6 +167,23 @@ class authValidation {
                 .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
             deliveryAvailable: Joi.boolean()
                 .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
+
+            // Business Details — format-validated only (standard PAN/GSTIN
+            // patterns). This does NOT verify against any government
+            // registry (no such integration exists — see storeProfile
+            // schema comment); it only guarantees a well-formed value is
+            // stored. PAN is required for any Business/Store seller; GSTIN
+            // is only required when the seller says they're GST-registered
+            // ("where applicable" — plenty of small stores legitimately
+            // aren't).
+            panNumber: Joi.string().trim().uppercase().pattern(/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'PAN number is required', 'string.pattern.base': 'Enter a valid PAN (e.g. ABCDE1234F)' }),
+            gstRegistered: Joi.boolean()
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
+            gstin: Joi.string().trim().uppercase().pattern(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/)
+                .when('gstRegistered', { is: true, then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'GSTIN is required when GST registered', 'string.pattern.base': 'Enter a valid 15-character GSTIN' }),
 
             // NOTE: this whole block used to be required for Seller
             // (previously Developer) registration and fed straight into

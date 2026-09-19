@@ -50,6 +50,9 @@ async function updateMyStoreProfile({ sellerId, body, req }) {
   if (body.categories !== undefined) store.categories = body.categories;
   if (body.pickupAvailable !== undefined) store.pickupAvailable = body.pickupAvailable;
   if (body.deliveryAvailable !== undefined) store.deliveryAvailable = body.deliveryAvailable;
+  if (body.panNumber !== undefined) store.panNumber = body.panNumber;
+  if (body.gstRegistered !== undefined) store.gstRegistered = body.gstRegistered;
+  if (body.gstin !== undefined) store.gstin = body.gstRegistered ? body.gstin : '';
   if (body.location) store.location = buildLocation(body.location);
 
   store.history.push({ action: 'UPDATED' });
