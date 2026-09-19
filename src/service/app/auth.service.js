@@ -63,10 +63,10 @@ authService.register = async (request) => {
     if (body.password) body.password = await helper.createPassword(body.password);
     const builtLocation = body.location ? buildUserLocation(body.location) : undefined;
     if (builtLocation) body.location = builtLocation;
-    // The seller registration form no longer collects this at all
-    // (BUILD MATERIAL only operates in India for sellers) — default it
+    // Neither registration form collects this anymore (BUILD MATERIAL
+    // only operates in India for Buyer and Seller alike) — default it
     // rather than leaving it unset.
-    if (userType === userTypeConstants.Seller && !body.countryOfResidence) {
+    if (!body.countryOfResidence) {
         body.countryOfResidence = 'IN';
     }
     const userData = await userModel.create(body);

@@ -58,20 +58,23 @@ class authValidation {
                     'any.required': 'phoneNumber is required.'
                 }),
 
-            // BUILD MATERIAL only operates in India for sellers — the
-            // seller registration form doesn't collect this at all
-            // (auth.service.js#register defaults it to 'IN'). Still
-            // required for Buyer, unchanged.
+            // BUILD MATERIAL only operates in India for Buyer and Seller
+            // alike — neither registration form collects this anymore
+            // (auth.service.js#register defaults it to 'IN'). Left
+            // optional rather than removed outright in case it's ever
+            // sent by another client.
             countryOfResidence: Joi.string()
                 .uppercase()
                 .valid(...KNOWN_COUNTRY_CODES)
-                .when('userType', { is: 'Seller', then: Joi.optional(), otherwise: Joi.required() })
+                .optional()
                 .messages({
-                    'string.empty': 'countryOfResidence is required',
                     'any.only': 'countryOfResidence must be a valid supported country code',
                 }),
+            // Seller-only — the Buyer registration form doesn't collect
+            // this at all (no product need for it), matching how
+            // `countryOfResidence` is scoped above.
             dob: Joi.string()
-                .required()
+                .when('userType', { is: 'Seller', then: Joi.required(), otherwise: Joi.optional() })
                 .custom((value, helpers) => {
                     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
                         return helpers.error('dob.format');
@@ -205,12 +208,14 @@ class authValidation {
                 zipCode: Joi.string().trim(),
                 country: Joi.string().uppercase().valid(...KNOWN_COUNTRY_CODES),
             }).optional(),
+            // Seller-only, same reasoning as `dob` above — the Buyer
+            // registration form no longer collects this.
             gender: Joi.string()
                 .valid('M', 'F', 'O')
                 .when('userType', {
-                    is: Joi.valid('Buyer', 'Seller'),
+                    is: 'Seller',
                     then: Joi.required(),
-                    otherwise: Joi.forbidden()
+                    otherwise: Joi.optional()
                 })
                 .messages({
                     'string.empty': 'Gender is required',
