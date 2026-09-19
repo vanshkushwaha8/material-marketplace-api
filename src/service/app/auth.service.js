@@ -25,6 +25,26 @@ const messageConstants = require('../../constants/message.constants');
 const TwofaModel = require('../../model/twofa.model');
 const twofaService = require('./twofa.service');
 const activitySessionHelper = require('../../helper/activitySession.helper');
+const storeProfileModel = require('../../model/storeProfile.model');
+const { SELLER_TYPES } = require('../../constants/sellerType.constants');
+const { STORE_VERIFICATION_STATES } = require('../../constants/storeProfile.constants');
+
+// Mirrors materialListing.service.js's buildLocation() — `geo` is only
+// set when real coordinates were supplied ("Use Current Location"),
+// never auto-instantiated with empty coordinates (would break the
+// 2dsphere index).
+function buildUserLocation(location = {}) {
+    const built = {
+        city: location.city || '',
+        state: location.state || '',
+        pincode: location.pincode || '',
+        area: location.area || '',
+    };
+    if (location.latitude != null && location.longitude != null) {
+        built.geo = { type: 'Point', coordinates: [Number(location.longitude), Number(location.latitude)] };
+    }
+    return built;
+}
 const SUPPORTED_CONSENT_LANGUAGES = ["en", "fr"];
 const normalizeConsentLanguage = (lang) => {
     if (!lang) return "en";
@@ -34,18 +54,36 @@ const normalizeConsentLanguage = (lang) => {
 const authService = {};
 authService.register = async (request) => {
     const { body } = request;
-    const { userType } = body;
+    const { userType, sellerType } = body;
     body.userId = request.auth?._id || new mongoose.Types.ObjectId();
     if (userType === userTypeConstants.Buyer && userType === userTypeConstants.Seller && body.profile_pic?.file) {
         await helper.moveFileFromFolder(body.profile_pic.file, 'profilePicture');
         body.profile_pic = { file: body.profile_pic.file };
     }
     if (body.password) body.password = await helper.createPassword(body.password);
+    const builtLocation = body.location ? buildUserLocation(body.location) : undefined;
+    if (builtLocation) body.location = builtLocation;
     const userData = await userModel.create(body);
-    // NOTE: developer/issuer (business) profile creation removed here —
-    // it belonged to the investment domain's KYB onboarding. Seller
-    // business-profile verification, if reintroduced, should be built
-    // fresh against the new Seller role rather than this legacy shape.
+
+    // A Business/Store seller gets a StoreProfile alongside their User
+    // doc — see storeProfile.schema.js. verificationStatus always starts
+    // UNVERIFIED: there is no real store-verification step implemented,
+    // so this must never be set to VERIFIED here.
+    if (userType === userTypeConstants.Seller && sellerType === SELLER_TYPES.BUSINESS_STORE) {
+        const store = await storeProfileModel.create({
+            seller: userData._id,
+            storeName: body.storeName,
+            businessType: body.businessType,
+            location: builtLocation,
+            address: body.storeAddress,
+            categories: body.categories || [],
+            pickupAvailable: !!body.pickupAvailable,
+            deliveryAvailable: !!body.deliveryAvailable,
+            verificationStatus: STORE_VERIFICATION_STATES.UNVERIFIED,
+            history: [{ action: 'CREATED', note: 'Created at registration' }],
+        });
+        await createAuditLog({ req: request, userId: userData._id, action: auditLogConstants.STORE_PROFILE_CREATED, entity: 'store_profiles', entityId: store._id });
+    }
     const consentIds = [body.termsCondtions, body.privacyPolicy, body.cookiesPolicy
     ].filter(Boolean);
     if (consentIds.length) {
@@ -97,7 +135,7 @@ authService.login = async (request, userData) => {
     return {
         availableStatus: userData?.availableStatus, _id: userData?._id,
         fullName: userData?.fullName, email: userData?.email,
-        userType: userData?.userType, token: token, createdAt: userData?.createdAt,
+        userType: userData?.userType, sellerType: userData?.sellerType || null, token: token, createdAt: userData?.createdAt,
         profilePicture: userData?.profilePicture,
         mfaEnabled: userData?.mfaEnabled
     };
@@ -153,6 +191,7 @@ authService.completeLogin = async (request, userData) => {
                     email: userData.email,
                     fullName: userData.fullName,
                     userType: userData.userType,
+                    sellerType: userData.sellerType || null,
                     mfaEnabled: userData.mfaEnabled
                 }
             }
@@ -452,6 +491,8 @@ authService.getProfile = async (request) => {
         phoneNumber: 1,
         userType: 1,
         buyerType: 1,
+        sellerType: 1,
+        location: 1,
         isEmailVerified: 1,
         profilePicture: 1,
         title: 1,

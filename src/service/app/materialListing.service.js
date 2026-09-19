@@ -2,8 +2,11 @@ const mongoose = require('mongoose');
 const materialListingModel = require('../../model/materialListing.model');
 const materialCategoryModel = require('../../model/materialCategory.model');
 const offerModel = require('../../model/offer.model');
+const userModel = require('../../model/user.model');
+const storeProfileModel = require('../../model/storeProfile.model');
 const deleteConstants = require('../../constants/delete.constants');
-const { LISTING_STATES, VERIFICATION_STATES, BUYER_VISIBLE_STATES, MAX_LISTING_IMAGES, MAX_LISTING_VIDEOS } = require('../../constants/materialListing.constants');
+const { LISTING_STATES, VERIFICATION_STATES, BUYER_VISIBLE_STATES, MAX_LISTING_IMAGES, MAX_LISTING_VIDEOS, SUPPLY_TYPES, INDIVIDUAL_SUPPLY_TYPES } = require('../../constants/materialListing.constants');
+const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { OFFER_TERMINAL_STATES } = require('../../constants/offer.constants');
 const { validateSpecifications,mergeSpecFieldDefs  } = require('../../validation/app/materialSpecs.validation');
 const helper = require('../../helper/helper');
@@ -81,6 +84,21 @@ async function assertCategoryAndSpecs({ categoryId, subcategoryId, specification
   return { category, subcategory, specifications: value };
 }
 
+// Server-side authoritative — never trust an individual seller's raw
+// `supplyType`, and never let a Business/Store seller choose one at all.
+// Sellers with no sellerType set yet (pre-migration legacy accounts —
+// spec section 25) are treated as INDIVIDUAL rather than rejected.
+function resolveSupplyType(sellerType, requested) {
+  if (sellerType === SELLER_TYPES.BUSINESS_STORE) return SUPPLY_TYPES.NEW_STOCK;
+  if (!INDIVIDUAL_SUPPLY_TYPES.includes(requested)) {
+    throw new MaterialListingError(
+      `supplyType must be one of ${INDIVIDUAL_SUPPLY_TYPES.join(', ')} for an individual seller`,
+      400
+    );
+  }
+  return requested;
+}
+
 function buildLocation(body) {
   const location = {
     city: body.location.city,
@@ -108,6 +126,9 @@ async function createListing({ sellerId, body, req }) {
     specifications: body.specifications,
   });
 
+  const seller = await userModel.findById(sellerId).select('sellerType');
+  const supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
+
   const [images, videos, invoiceProof] = await Promise.all([
     finalizeMediaFiles(body.images),
     finalizeMediaFiles(body.videos),
@@ -122,11 +143,18 @@ async function createListing({ sellerId, body, req }) {
     subcategory: body.subcategory || null,
     brand: body.brand || '',
     condition: body.condition,
+    supplyType,
     quantity: body.quantity,
     unit: body.unit,
     price: body.price,
     currency: body.currency || 'INR',
-    negotiable: body.negotiable !== false,
+    // Business/Store listings default to a fixed listed price rather
+    // than negotiation (spec: "do not implement negotiation as the
+    // primary business-store pricing flow") — still a seller choice, not
+    // a hard rule, so an explicit body.negotiable is respected either way.
+    negotiable: body.negotiable !== undefined
+      ? body.negotiable !== false
+      : seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE,
     specifications,
     manufacturingDate: body.manufacturingDate || null,
     purchaseDate: body.purchaseDate || null,
@@ -174,6 +202,16 @@ async function updateListing({ sellerId, listingId, body, req }) {
     listing.specifications = specifications;
   }
   if (body.subcategory !== undefined) listing.subcategory = body.subcategory || null;
+
+  // A Business/Store seller's supplyType can never move off NEW_STOCK, so
+  // there's nothing to change for them regardless of what's sent — only
+  // an Individual seller can switch between SURPLUS and NEW_UNUSED here.
+  if (body.supplyType !== undefined) {
+    const seller = await userModel.findById(sellerId).select('sellerType');
+    if (seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) {
+      listing.supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
+    }
+  }
 
     const directFields = ['title', 'description', 'brand', 'condition', 'unit', 'price', 'currency', 'negotiable', 'manufacturingDate', 'purchaseDate'];
   for (const field of directFields) {
@@ -259,13 +297,46 @@ async function deleteListing({ sellerId, listingId, req }) {
   return { deleted: true };
 }
 
+// Business/Store listings show the store's name/verification instead of
+// "Individual Seller" (spec's card/detail-page distinction) — StoreProfile
+// isn't a `ref` on materialListing (only seller id is shared between the
+// two), so this is a small explicit lookup rather than a populate.
+async function attachStoreProfile(listing) {
+  if (listing?.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) return listing;
+  const store = await storeProfileModel
+    .findOne({ seller: listing.seller._id, is_deleted: deleteConstants.NOT_DELETED })
+    .select('storeName verificationStatus')
+    .lean();
+  if (store) {
+    if (listing.toObject) listing = listing.toObject();
+    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus };
+  }
+  return listing;
+}
+
+async function attachStoreProfiles(listings) {
+  const businessSellerIds = [...new Set(
+    listings.filter((l) => l.seller?.sellerType === SELLER_TYPES.BUSINESS_STORE).map((l) => String(l.seller._id))
+  )];
+  if (!businessSellerIds.length) return listings;
+  const stores = await storeProfileModel
+    .find({ seller: { $in: businessSellerIds }, is_deleted: deleteConstants.NOT_DELETED })
+    .select('seller storeName verificationStatus')
+    .lean();
+  const storeBySellerId = new Map(stores.map((s) => [String(s.seller), s]));
+  return listings.map((l) => {
+    const store = l.seller?.sellerType === SELLER_TYPES.BUSINESS_STORE ? storeBySellerId.get(String(l.seller._id)) : null;
+    return store ? { ...l, storeProfile: { storeName: store.storeName, verificationStatus: store.verificationStatus } } : l;
+  });
+}
+
 async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   if (!mongoose.Types.ObjectId.isValid(listingId)) throw new MaterialListingError('Invalid listing id', 404);
   const listing = await materialListingModel
     .findOne({ _id: listingId, is_deleted: deleteConstants.NOT_DELETED })
     .populate('category', 'name slug')
     .populate('subcategory', 'name slug')
-    .populate('seller', 'fullName email createdAt');
+    .populate('seller', 'fullName email createdAt sellerType');
   if (!listing) throw new MaterialListingError('Listing not found', 404);
 
   const isOwner = viewerId && String(listing.seller._id) === String(viewerId);
@@ -275,20 +346,23 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   if (!isOwner && !viewerIsAdmin) {
     materialListingModel.updateOne({ _id: listing._id }, { $inc: { viewCount: 1 } }).catch(() => {});
   }
-  return listing;
+  return attachStoreProfile(listing);
 }
 
 async function search(filters) {
   const {
     page = 1, limit = 20, search: text, category, subcategory, condition, brand,
+    supplyType, sellerType, sellerId,
     minPrice, maxPrice, minQuantity, negotiable, verified,
     city, state, lat, lng, radiusKm, sort = 'newest',
   } = filters;
 
   const query = { status: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT,], is_deleted: deleteConstants.NOT_DELETED };
+  if (sellerId) query.seller = sellerId; // storeProfile.service.js#getStoreProducts — one seller's own storefront
   if (category) query.category = category;
   if (subcategory) query.subcategory = subcategory;
   if (condition) query.condition = condition;
+  if (supplyType) query.supplyType = supplyType;
   if (brand) query.brand = { $regex: brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
   if (minPrice != null || maxPrice != null) {
     query.price = {};
@@ -301,6 +375,15 @@ async function search(filters) {
   if (city) query['location.city'] = { $regex: `^${city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
   if (state) query['location.state'] = { $regex: `^${state.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
   if (text) query.$text = { $search: text };
+
+  // sellerType lives on User, not on the listing itself — resolve to a
+  // set of seller ids first rather than reaching for an aggregation
+  // $lookup, consistent with how attachStoreProfiles() below does its own
+  // small secondary lookup instead of a `ref` that doesn't exist.
+  if (sellerType && !query.seller) {
+    const sellerIds = await userModel.find({ sellerType }).select('_id').lean();
+    query.seller = { $in: sellerIds.map((s) => s._id) };
+  }
 
   const pageNum = Math.max(1, Number(page) || 1);
   const pageLimit = Math.min(100, Number(limit) || 20);
@@ -318,11 +401,12 @@ async function search(filters) {
     const [rawData, count] = await Promise.all([
       // Seller name is buyer-facing (ListingCard's seller-identity row,
       // EnquireModal's success message) — only fullName, never email/phone,
-      // to the public search response.
-      materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName').skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
+      // to the public search response. sellerType drives the
+      // Individual/Business card treatment (attachStoreProfiles below).
+      materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName sellerType').skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
       materialListingModel.countDocuments(query),
     ]);
-    return { getData: rawData, count, page: pageNum, limit: pageLimit };
+    return { getData: await attachStoreProfiles(rawData), count, page: pageNum, limit: pageLimit };
   }
 
   const sortMap = {
@@ -332,10 +416,10 @@ async function search(filters) {
   };
 
   const [rawData, count] = await Promise.all([
-    materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName').sort(sortMap[sort] || sortMap.newest).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
+    materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName sellerType').sort(sortMap[sort] || sortMap.newest).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
     materialListingModel.countDocuments(query),
   ]);
-  return { getData: rawData, count, page: pageNum, limit: pageLimit };
+  return { getData: await attachStoreProfiles(rawData), count, page: pageNum, limit: pageLimit };
 }
 
 async function myListings({ sellerId, page = 1, limit = 20, status }) {
@@ -352,6 +436,7 @@ async function myListings({ sellerId, page = 1, limit = 20, status }) {
 
 module.exports = {
   MaterialListingError,
+  resolveSupplyType,
   createListing,
   updateListing,
   submitForVerification,

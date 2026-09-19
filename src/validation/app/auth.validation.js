@@ -1,6 +1,8 @@
 const Joi = require('joi');
 const { isPasswordSimilarToUserInfo } = require('../../utils/passwordSimilarity');
 const { KNOWN_COUNTRY_CODES } = require('../../config/supportedCountries');
+const { SELLER_TYPES } = require('../../constants/sellerType.constants');
+const { BUSINESS_TYPES, STORE_CATEGORIES } = require('../../constants/storeProfile.constants');
 class authValidation {
     static get passwordRule() {
         return Joi.string()
@@ -111,6 +113,54 @@ class authValidation {
                     'dob.tooOld': 'Please enter a valid date of birth',
                     'dob.underAge': 'You must be at least 18 years old'
                 }),
+            // Seller-only sub-type — see sellerType.constants.js. Kept as
+            // its own field, never merged with `userType`.
+            sellerType: Joi.string()
+                .valid(...Object.values(SELLER_TYPES))
+                .when('userType', {
+                    is: 'Seller',
+                    then: Joi.required(),
+                    otherwise: Joi.forbidden(),
+                })
+                .messages({
+                    'any.required': 'sellerType is required for sellers',
+                    'any.only': 'Invalid sellerType',
+                }),
+
+            // Collected for both Buyer and Seller — the marketplace is
+            // location-driven. `latitude`/`longitude` are optional (only
+            // present if "Use Current Location" was used on the client);
+            // manual entry supplies city/state only.
+            location: Joi.object({
+                city: Joi.string().trim().required().messages({ 'string.empty': 'City is required' }),
+                state: Joi.string().trim().required().messages({ 'string.empty': 'State is required' }),
+                pincode: Joi.string().trim().allow('').optional(),
+                area: Joi.string().trim().allow('').optional(),
+                latitude: Joi.number().min(-90).max(90).optional(),
+                longitude: Joi.number().min(-180).max(180).optional(),
+            }).required(),
+
+            // Store setup — required only when sellerType is
+            // BUSINESS_STORE, forbidden otherwise (a Buyer or an
+            // Individual Seller can't submit a store profile at
+            // registration). See storeProfile.constants.js.
+            storeName: Joi.string().trim().min(2).max(150)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'Store / business name is required' }),
+            businessType: Joi.string().valid(...Object.values(BUSINESS_TYPES))
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'Business type is required', 'any.only': 'Invalid business type' }),
+            storeAddress: Joi.string().trim().min(5).max(300)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'Store address is required' }),
+            categories: Joi.array().items(Joi.string().valid(...Object.values(STORE_CATEGORIES))).min(1)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'array.min': 'Select at least one category you sell' }),
+            pickupAvailable: Joi.boolean()
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
+            deliveryAvailable: Joi.boolean()
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
+
             // NOTE: this whole block used to be required for Seller
             // (previously Developer) registration and fed straight into
             // developer.model.js — the business/KYB onboarding record. That

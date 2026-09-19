@@ -1,5 +1,6 @@
 const Joi = require("joi");
-const { CONDITION_TYPES } = require('../../constants/materialListing.constants');
+const { CONDITION_TYPES, SUPPLY_TYPES } = require('../../constants/materialListing.constants');
+const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { MATERIAL_UNITS } = require('../../constants/materialUnit.constants');
 
 const objectId = () => Joi.string().pattern(/^[a-fA-F0-9]{24}$/).messages({
@@ -15,11 +16,19 @@ class materialListingValidation {
       subcategory: objectId().allow(null, ''),
       brand: Joi.string().trim().max(100).allow(''),
       condition: Joi.string().valid(...Object.values(CONDITION_TYPES)).required(),
+      // Optional here — materialListing.service.js#createListing derives/
+      // enforces the actual value from the seller's sellerType, since a
+      // Business/Store seller must never be able to submit anything but
+      // NEW_STOCK and an Individual seller must never submit NEW_STOCK.
+      supplyType: Joi.string().valid(...Object.values(SUPPLY_TYPES)).optional(),
       quantity: Joi.number().positive().required(),
       unit: Joi.string().valid(...MATERIAL_UNITS).required(),
       price: Joi.number().min(0).required(),
       currency: Joi.string().trim().default('INR'),
-      negotiable: Joi.boolean().default(true),
+      // No Joi default — materialListing.service.js#createListing needs to
+      // tell "omitted" apart from "explicitly sent" to apply the right
+      // seller-type-based default (Individual: true, Business/Store: false).
+      negotiable: Joi.boolean().optional(),
       specifications: Joi.object().unknown(true).default({}),
       manufacturingDate: Joi.date().allow(null),
       purchaseDate: Joi.date().allow(null),
@@ -51,6 +60,8 @@ class materialListingValidation {
       category: objectId().allow(''),
       subcategory: objectId().allow(''),
       condition: Joi.string().valid(...Object.values(CONDITION_TYPES)).allow(''),
+      supplyType: Joi.string().valid(...Object.values(SUPPLY_TYPES)).allow(''),
+      sellerType: Joi.string().valid(...Object.values(SELLER_TYPES)).allow(''),
       brand: Joi.string().trim().allow(''),
       minPrice: Joi.number().min(0).allow(null, ''),
       maxPrice: Joi.number().min(0).allow(null, ''),

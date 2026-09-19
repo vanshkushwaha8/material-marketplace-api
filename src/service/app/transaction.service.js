@@ -206,6 +206,12 @@ async function raiseDispute({ transactionId, userId, reason, req }) {
 async function getOne({ transactionId, userId }) {
   const { txn } = await getOwned(transactionId, userId);
   await txn.populate('listing', 'title images unit');
+  // Both parties land on the same detail page (buyer and seller routes
+  // share this — see TransactionDetail.jsx), so both names are populated
+  // regardless of which side is viewing, same as myTransactions() already
+  // does for the counterparty in the list view.
+  await txn.populate('buyer', 'fullName');
+  await txn.populate('seller', 'fullName sellerType');
   return txn;
 }
 
