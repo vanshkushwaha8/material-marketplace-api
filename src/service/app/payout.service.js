@@ -4,7 +4,7 @@ const sellerBankAccountModel = require('../../model/sellerBankAccount.model');
 const transactionModel = require('../../model/transaction.model');
 const deleteConstants = require('../../constants/delete.constants');
 const { PAYOUT_STATES, BANK_ACCOUNT_STATES, PAYMENT_PROCESSING_FEE_PCT } = require('../../constants/payout.constants');
-const { TRANSACTION_STATES, SETTLEMENT_STATES } = require('../../constants/transaction.constants');
+const { TRANSACTION_STATES, SETTLEMENT_STATES, COMMISSION_STATES } = require('../../constants/transaction.constants');
 const { toPaise, fromPaise } = require('../../helper/money.helper');
 const { getPayoutAdapter } = require('../../config/integrations.config');
 const configenv = require('../../config/env.config');
@@ -101,7 +101,7 @@ async function markPayoutPaid(payout, req) {
   payout.processedAt = new Date();
   payout.history.push({ action: 'PAID' });
   await payout.save();
-  await transactionModel.updateOne({ _id: payout.transaction }, { $set: { settlementStatus: SETTLEMENT_STATES.RELEASED } });
+  await transactionModel.updateOne({ _id: payout.transaction }, { $set: { settlementStatus: SETTLEMENT_STATES.RELEASED, commissionStatus: COMMISSION_STATES.SETTLED } });
   await createAuditLog({ req, userId: payout.seller, action: auditLogConstants.PAYOUT_PAID, entity: 'payouts', entityId: payout._id });
 }
 
