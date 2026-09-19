@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { LISTING_STATES, VERIFICATION_STATES, CONDITION_TYPES } = require('../constants/materialListing.constants');
+const { LISTING_STATES, VERIFICATION_STATES, CONDITION_TYPES, SUPPLY_TYPES } = require('../constants/materialListing.constants');
 const { MATERIAL_UNITS } = require('../constants/materialUnit.constants');
 const deleteConstants = require('../constants/delete.constants');
 
@@ -40,6 +40,11 @@ const materialListingSchema = new mongoose.Schema(
     subcategory: { type: mongoose.Schema.Types.ObjectId, ref: 'material_categories', default: null },
     brand: { type: String, trim: true, default: '' },
     condition: { type: String, enum: Object.values(CONDITION_TYPES), required: true },
+    // Deliberately separate from `condition` — see materialListing.constants.js.
+    // Set server-side in materialListing.service.js#createListing, never
+    // trusted verbatim from an individual seller's request body for
+    // NEW_STOCK, and always forced for Business/Store sellers.
+    supplyType: { type: String, enum: Object.values(SUPPLY_TYPES), required: true, index: true },
 
     quantity: { type: Number, required: true, min: 0 },
     availableQuantity: { type: Number, min: 0 },

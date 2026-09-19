@@ -1,6 +1,17 @@
 const mongoose = require('mongoose');
-const { TRANSACTION_STATES, SETTLEMENT_STATES } = require('../constants/transaction.constants');
+const { TRANSACTION_STATES, SETTLEMENT_STATES, COMMISSION_STATES } = require('../constants/transaction.constants');
 const deleteConstants = require('../constants/delete.constants');
+
+// Same shape as material_listings' mediaSchema — handover evidence is
+// uploaded through the same generic upload endpoint as listing media.
+const handoverMediaSchema = new mongoose.Schema(
+  {
+    url: { type: String, required: true },
+    storageKey: { type: String, required: true },
+    mimeType: { type: String },
+  },
+  { _id: false }
+);
 
 // Created the moment an offer is mutually ACCEPTED. Snapshots the agreed
 // commercial terms (agreedQuantity/agreedAmount/unitPrice) so later edits
@@ -33,9 +44,13 @@ const transactionSchema = new mongoose.Schema(
     platformCommissionAmount: { type: Number, default: null },
     sellerSettlementAmount: { type: Number, default: null },
     settlementStatus: { type: String, enum: Object.values(SETTLEMENT_STATES), default: SETTLEMENT_STATES.PENDING },
+    commissionStatus: { type: String, enum: Object.values(COMMISSION_STATES), default: COMMISSION_STATES.PENDING, index: true },
 
     disputed: { type: Boolean, default: false },
     disputeReason: { type: String, trim: true, default: '' },
+
+    handoverNote: { type: String, trim: true, default: '' },
+    handoverEvidence: { type: [handoverMediaSchema], default: [] },
 
     history: [
       {

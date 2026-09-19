@@ -69,6 +69,17 @@ class adminValidation {
             newPassword: this.passwordRule
         });
     }
+    static updateProfile() {
+        return Joi.object({
+            fullName: Joi.string().trim().min(2).max(80).required().messages({
+                'string.empty': 'Name is required',
+                'string.min': 'Name must be at least 2 characters long.',
+            }),
+        });
+    }
+    static validateUpdateProfile(data) {
+        return this.updateProfile().validate(data, { abortEarly: false });
+    }
     /**
      * Validate user login data.
      * @param {Object} data - The user input data.

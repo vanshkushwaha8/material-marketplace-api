@@ -29,7 +29,7 @@ async function getOne({ listingId }) {
     .findOne({ _id: listingId, is_deleted: deleteConstants.NOT_DELETED })
     .populate('category', 'name slug specFields parentCategory')
     .populate('subcategory', 'name slug specFields parentCategory')
-    .populate('seller', 'fullName email phoneNumber userType createdAt');
+    .populate('seller', 'fullName email phoneNumber userType sellerType createdAt');
   if (!listing) throw new MaterialListingAdminError('Listing not found', 404);
   return listing;
 }

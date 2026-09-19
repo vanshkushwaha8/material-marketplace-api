@@ -3,7 +3,7 @@ const transactionModel = require('../../model/transaction.model');
 const materialListingModel = require('../../model/materialListing.model');
 const deleteConstants = require('../../constants/delete.constants');
 const { LISTING_STATES } = require('../../constants/materialListing.constants');
-const { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES } = require('../../constants/transaction.constants');
+const { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES, COMMISSION_STATES } = require('../../constants/transaction.constants');
 const { createAuditLog, createAuditLogAdmin } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const configenv = require('../../config/env.config');
@@ -69,6 +69,7 @@ async function markPaymentConfirmed({ transactionId, req }) {
   txn.platformCommissionPct = pct;
   txn.platformCommissionAmount = commission;
   txn.sellerSettlementAmount = settlement;
+  txn.commissionStatus = COMMISSION_STATES.COLLECTED;
 
   txn.status = TRANSACTION_STATES.PAYMENT_CONFIRMED;
   txn.paymentConfirmedAt = new Date();
@@ -78,7 +79,7 @@ async function markPaymentConfirmed({ transactionId, req }) {
   return txn;
 }
 
-async function markHandover({ transactionId, userId, req }) {
+async function markHandover({ transactionId, userId, note, evidence, req }) {
   const { txn, role } = await getOwned(transactionId, userId);
   if (role !== 'seller') throw new TransactionError('Only the seller can start handover', 403);
   if (txn.status !== TRANSACTION_STATES.PAYMENT_CONFIRMED) {
@@ -86,9 +87,11 @@ async function markHandover({ transactionId, userId, req }) {
   }
   txn.status = TRANSACTION_STATES.HANDOVER_STARTED;
   txn.handoverStartedAt = new Date();
+  if (note) txn.handoverNote = note;
+  if (Array.isArray(evidence) && evidence.length) txn.handoverEvidence = evidence;
   txn.history.push({ action: 'HANDOVER_STARTED', by: 'seller' });
   await txn.save();
-  await createAuditLog({ req, userId, action: auditLogConstants.HANDOVER_STARTED, entity: 'transactions', entityId: txn._id });
+  await createAuditLog({ req, userId, action: auditLogConstants.HANDOVER_STARTED, entity: 'transactions', entityId: txn._id, metadata: { evidenceCount: txn.handoverEvidence.length } });
   return txn;
 }
 
@@ -203,6 +206,12 @@ async function raiseDispute({ transactionId, userId, reason, req }) {
 async function getOne({ transactionId, userId }) {
   const { txn } = await getOwned(transactionId, userId);
   await txn.populate('listing', 'title images unit');
+  // Both parties land on the same detail page (buyer and seller routes
+  // share this — see TransactionDetail.jsx), so both names are populated
+  // regardless of which side is viewing, same as myTransactions() already
+  // does for the counterparty in the list view.
+  await txn.populate('buyer', 'fullName');
+  await txn.populate('seller', 'fullName sellerType');
   return txn;
 }
 

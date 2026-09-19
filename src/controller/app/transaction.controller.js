@@ -16,7 +16,10 @@ class TransactionController {
 
   markHandover = async (request, response, nextFunction) => {
     try {
-      const txn = await transactionService.markHandover({ transactionId: request.params.id, userId: request.auth._id, req: request });
+      const { error, value } = transactionValidation.ValidateHandover(request.body || {});
+      const validationError = responseConstants.validatIonError(response, error);
+      if (validationError) return;
+      const txn = await transactionService.markHandover({ transactionId: request.params.id, userId: request.auth._id, note: value.note, evidence: value.evidence, req: request });
       return responseConstants.success(response, 'Handover started', txn, statusCodes.OK);
     } catch (error) {
       if (error instanceof transactionService.TransactionError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);

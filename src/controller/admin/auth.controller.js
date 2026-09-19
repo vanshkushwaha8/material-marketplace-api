@@ -136,6 +136,25 @@ class adminController {
             nextFunction(error)
         }
     };
+    updateProfile = async (request, response, nextFunction) => {
+        try {
+            const { error } = adminValidation.validateUpdateProfile(request.body);
+            const validationError = responseConstants.validatIonError(response, error);
+            if (validationError) return;
+
+            const data = await authService.updateProfile(request);
+            await createAuditLogAdmin({
+                req: request,
+                adminId: request.auth._id,
+                action: auditLogConstants.UPDATEPROFILE,
+                entity: CollectionName.admins,
+                entityId: request.auth._id,
+            });
+            return responseConstants.success(response, "Profile updated successfully", data, statusCodes.OK);
+        } catch (error) {
+            nextFunction(error)
+        }
+    };
     logout = async (request, response, nextFunction) => {
         try {
             const cookieToken = request.cookies?.[configenv.ADMIN_AUTH_COOKIE_NAME];

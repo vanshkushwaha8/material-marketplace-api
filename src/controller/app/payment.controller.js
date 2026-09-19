@@ -1,6 +1,7 @@
 const responseConstants = require('../../constants/response.constatnts');
 const statusCodes = require('../../constants/httpConstants');
 const paymentService = require('../../service/app/payment.service');
+const paymentValidation = require('../../validation/app/payment.validation');
 
 class PaymentController {
   createOrder = async (request, response, nextFunction) => {
@@ -25,7 +26,10 @@ class PaymentController {
 
   verify = async (request, response, nextFunction) => {
     try {
-      const { providerOrderId, providerPaymentId, signature } = request.body;
+      const { error, value } = paymentValidation.ValidateVerify(request.body);
+      const validationError = responseConstants.validatIonError(response, error);
+      if (validationError) return;
+      const { providerOrderId, providerPaymentId, signature } = value;
       const result = await paymentService.verifyPayment({ buyerId: request.auth._id, providerOrderId, providerPaymentId, signature, req: request });
       return responseConstants.success(response, 'Payment verified', result.payment, statusCodes.OK);
     } catch (error) {

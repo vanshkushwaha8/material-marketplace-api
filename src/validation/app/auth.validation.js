@@ -1,6 +1,8 @@
 const Joi = require('joi');
 const { isPasswordSimilarToUserInfo } = require('../../utils/passwordSimilarity');
 const { KNOWN_COUNTRY_CODES } = require('../../config/supportedCountries');
+const { SELLER_TYPES } = require('../../constants/sellerType.constants');
+const { BUSINESS_TYPES, STORE_CATEGORIES } = require('../../constants/storeProfile.constants');
 class authValidation {
     static get passwordRule() {
         return Joi.string()
@@ -56,16 +58,23 @@ class authValidation {
                     'any.required': 'phoneNumber is required.'
                 }),
 
+            // BUILD MATERIAL only operates in India for Buyer and Seller
+            // alike — neither registration form collects this anymore
+            // (auth.service.js#register defaults it to 'IN'). Left
+            // optional rather than removed outright in case it's ever
+            // sent by another client.
             countryOfResidence: Joi.string()
                 .uppercase()
                 .valid(...KNOWN_COUNTRY_CODES)
-                .required()
+                .optional()
                 .messages({
-                    'string.empty': 'countryOfResidence is required',
                     'any.only': 'countryOfResidence must be a valid supported country code',
                 }),
+            // Seller-only — the Buyer registration form doesn't collect
+            // this at all (no product need for it), matching how
+            // `countryOfResidence` is scoped above.
             dob: Joi.string()
-                .required()
+                .when('userType', { is: 'Seller', then: Joi.required(), otherwise: Joi.optional() })
                 .custom((value, helpers) => {
                     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
                         return helpers.error('dob.format');
@@ -111,6 +120,74 @@ class authValidation {
                     'dob.tooOld': 'Please enter a valid date of birth',
                     'dob.underAge': 'You must be at least 18 years old'
                 }),
+            // Seller-only sub-type — see sellerType.constants.js. Kept as
+            // its own field, never merged with `userType`.
+            sellerType: Joi.string()
+                .valid(...Object.values(SELLER_TYPES))
+                .when('userType', {
+                    is: 'Seller',
+                    then: Joi.required(),
+                    otherwise: Joi.forbidden(),
+                })
+                .messages({
+                    'any.required': 'sellerType is required for sellers',
+                    'any.only': 'Invalid sellerType',
+                }),
+
+            // Collected for both Buyer and Seller — the marketplace is
+            // location-driven. `latitude`/`longitude` are optional (only
+            // present if "Use Current Location" was used on the client);
+            // manual entry supplies city/state only.
+            location: Joi.object({
+                city: Joi.string().trim().required().messages({ 'string.empty': 'City is required' }),
+                state: Joi.string().trim().required().messages({ 'string.empty': 'State is required' }),
+                pincode: Joi.string().trim().pattern(/^[0-9]{6}$/).required().messages({
+                    'string.empty': 'Pincode is required',
+                    'string.pattern.base': 'Enter a valid 6-digit pincode',
+                }),
+                area: Joi.string().trim().allow('').optional(),
+                latitude: Joi.number().min(-90).max(90).optional(),
+                longitude: Joi.number().min(-180).max(180).optional(),
+            }).required(),
+
+            // Store setup — required only when sellerType is
+            // BUSINESS_STORE, forbidden otherwise (a Buyer or an
+            // Individual Seller can't submit a store profile at
+            // registration). See storeProfile.constants.js.
+            storeName: Joi.string().trim().min(2).max(150)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'Store / business name is required' }),
+            businessType: Joi.string().valid(...Object.values(BUSINESS_TYPES))
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'Business type is required', 'any.only': 'Invalid business type' }),
+            storeAddress: Joi.string().trim().min(5).max(300)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'Store address is required' }),
+            categories: Joi.array().items(Joi.string().valid(...Object.values(STORE_CATEGORIES))).min(1)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'array.min': 'Select at least one category you sell' }),
+            pickupAvailable: Joi.boolean()
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
+            deliveryAvailable: Joi.boolean()
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
+
+            // Business Details — format-validated only (standard PAN/GSTIN
+            // patterns). This does NOT verify against any government
+            // registry (no such integration exists — see storeProfile
+            // schema comment); it only guarantees a well-formed value is
+            // stored. PAN is required for any Business/Store seller; GSTIN
+            // is only required when the seller says they're GST-registered
+            // ("where applicable" — plenty of small stores legitimately
+            // aren't).
+            panNumber: Joi.string().trim().uppercase().pattern(/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'PAN number is required', 'string.pattern.base': 'Enter a valid PAN (e.g. ABCDE1234F)' }),
+            gstRegistered: Joi.boolean()
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional().default(false), otherwise: Joi.forbidden() }),
+            gstin: Joi.string().trim().uppercase().pattern(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/)
+                .when('gstRegistered', { is: true, then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'any.required': 'GSTIN is required when GST registered', 'string.pattern.base': 'Enter a valid 15-character GSTIN' }),
+
             // NOTE: this whole block used to be required for Seller
             // (previously Developer) registration and fed straight into
             // developer.model.js — the business/KYB onboarding record. That
@@ -131,12 +208,14 @@ class authValidation {
                 zipCode: Joi.string().trim(),
                 country: Joi.string().uppercase().valid(...KNOWN_COUNTRY_CODES),
             }).optional(),
+            // Seller-only, same reasoning as `dob` above — the Buyer
+            // registration form no longer collects this.
             gender: Joi.string()
                 .valid('M', 'F', 'O')
                 .when('userType', {
-                    is: Joi.valid('Buyer', 'Seller'),
+                    is: 'Seller',
                     then: Joi.required(),
-                    otherwise: Joi.forbidden()
+                    otherwise: Joi.optional()
                 })
                 .messages({
                     'string.empty': 'Gender is required',

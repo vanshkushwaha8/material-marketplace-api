@@ -33,6 +33,23 @@ const CONDITION_TYPES = Object.freeze({
   USED: 'used',
 });
 
+// Kept deliberately separate from both `condition` (above) and
+// `sellerType` (sellerType.constants.js) — this is WHERE the material
+// came from (an individual's project leftover vs a store's regular
+// stock), not who is selling it or its physical state. A listing's
+// marketplace card is derived from sellerType + supplyType together,
+// never from one field encoding both.
+const SUPPLY_TYPES = Object.freeze({
+  SURPLUS: 'SURPLUS',
+  NEW_UNUSED: 'NEW_UNUSED',
+  NEW_STOCK: 'NEW_STOCK',
+});
+
+// Individual sellers choose between these two when creating a listing.
+// Business/Store sellers never choose — their listings are always forced
+// to NEW_STOCK server-side (materialListing.service.js#createListing).
+const INDIVIDUAL_SUPPLY_TYPES = [SUPPLY_TYPES.SURPLUS, SUPPLY_TYPES.NEW_UNUSED];
+
 // Every category MUST map to one of these validators in
 // materialSpecs.validation.js — see that file's SPEC_VALIDATORS map.
 // Keeping the list here (rather than only in validation) is what lets
@@ -61,6 +78,8 @@ module.exports = {
   BUYER_VISIBLE_STATES,
   VERIFICATION_STATES,
   CONDITION_TYPES,
+  SUPPLY_TYPES,
+  INDIVIDUAL_SUPPLY_TYPES,
   CATEGORY_SLUGS,
   MAX_LISTING_IMAGES,
   MAX_LISTING_VIDEOS,
