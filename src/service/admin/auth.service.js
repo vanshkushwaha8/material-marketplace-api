@@ -51,6 +51,16 @@ authService.changePassword = async (request) => {
 };
 
 
+authService.updateProfile = async (request) => {
+    const userId = request?.auth?._id;
+    const data = await adminModel.findOneAndUpdate(
+        { _id: userId, is_deleted: deleteConstants.NOT_DELETED },
+        { $set: { fullName: request.body.fullName } },
+        { new: true }
+    ).select("fullName profilePicture email type isSuperAdmin roleId mfaEnabled");
+    return data;
+};
+
 authService.getProfile = async (request) => {
     const userId = request?.auth?._id || request?.query?._id;
     const data = await adminModel.findOne({ _id: userId, is_deleted: deleteConstants.NOT_DELETED }).select("fullName profilePicture email type isSuperAdmin roleId mfaEnabled");
