@@ -18,7 +18,7 @@ const paymentSchema = new mongoose.Schema(
 
     provider: { type: String, required: true },
     providerOrderId: { type: String, required: true, unique: true, index: true },
-    providerPaymentId: { type: String, default: null },
+    providerPaymentId: { type: String },
 
     amountPaise: { type: Number, required: true, min: 0 }, // backend-authoritative, never from the frontend
     currency: { type: String, default: 'INR' },
