@@ -142,11 +142,13 @@ async function createOffer({ buyerId, body, req }) {
 
   await notificationService.createNotification({
     recipientId: listing.seller,
+    actorId: buyerId,
     type: NOTIFICATION_TYPES.OFFER_RECEIVED,
     title: 'New offer received',
-    message: `You received an offer of ₹${body.amount} for ${listing.title}`,
+    message: (actorName) => `${actorName || 'A buyer'} made an offer of ₹${body.amount} for your listing "${listing.title}"`,
     entityType: 'offer',
     entityId: offer._id,
+    entityName: listing.title,
   });
 
   return offer;
@@ -163,18 +165,32 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
     throw new OfferError(`This offer is already ${offer.status.toLowerCase()}`, 409);
   }
 
+  // Entity name for the notification text (spec section 6/7) — cheap
+  // single lookup, reused by whichever branch below fires.
+  await offer.populate('listing', 'title');
+  const listingTitle = offer.listing?.title || 'the listing';
+  // The party who is NOT performing this action — CANCEL/REJECT/ACCEPT all
+  // notify them, never the actor themself (spec section 8).
+  const otherParty = role === 'buyer' ? offer.seller : offer.buyer;
+
   if (action === 'CANCEL') {
     // Either party can withdraw at any non-terminal point — spec section
     // 18 lists CANCELLED as a distinct terminal state from REJECTED so a
     // withdrawal isn't recorded as if the other side turned it down.
         offer.status = OFFER_STATES.CANCELLED;
     offer.history.push({ version: offer.history.length + 1, action: 'CANCEL', by: role, actorId: userId, message: message || '' });
+    await notificationService.createNotification({
+      recipientId: otherParty, actorId: userId, type: NOTIFICATION_TYPES.OFFER_CANCELLED,
+      title: 'Offer withdrawn', message: (actorName) => `${actorName || 'The other party'} withdrew their offer on "${listingTitle}"`,
+      entityType: 'offer', entityId: offer._id, entityName: listingTitle,
+    });
   } else if (action === 'REJECT') {
     offer.status = OFFER_STATES.REJECTED;
     offer.history.push({ version: offer.history.length + 1, action: 'REJECT', by: role, actorId: userId, message: message || '' });
-        await notificationService.createNotification({
-      recipientId: offer.buyer, type: NOTIFICATION_TYPES.OFFER_REJECTED,
-      title: 'Offer rejected', message: 'The seller rejected your offer', entityType: 'offer', entityId: offer._id,
+    await notificationService.createNotification({
+      recipientId: otherParty, actorId: userId, type: NOTIFICATION_TYPES.OFFER_REJECTED,
+      title: 'Offer rejected', message: (actorName) => `${actorName || 'The other party'} rejected your offer on "${listingTitle}"`,
+      entityType: 'offer', entityId: offer._id, entityName: listingTitle,
     });
   } else {
     if (offer.lastActionBy === role) {
@@ -186,12 +202,12 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
       offer.status = OFFER_STATES.ACCEPTED;
       offer.history.push({ version: offer.history.length + 1, action: 'ACCEPT', by: role, actorId: userId, amount: offer.currentAmount, unitPrice: unitPriceFromAmount(offer.currentAmount, offer.quantity), message: message || '' });
       await offer.save();
-      await createTransactionForAccept(offer, listing, req);
+      const transaction = await createTransactionForAccept(offer, listing, req);
       await createAuditLog({ req, userId, action: auditLogConstants.OFFER_ACCEPTED, entity: 'offers', entityId: offer._id });
-            await notificationService.createNotification({
-        recipientId: offer.buyer, type: NOTIFICATION_TYPES.OFFER_ACCEPTED,
-        title: 'Offer accepted', message: `Your offer for ${offer.quantity} units was accepted — proceed to payment`,
-        entityType: 'transaction', entityId: offer._id,
+      await notificationService.createNotification({
+        recipientId: otherParty, actorId: userId, type: NOTIFICATION_TYPES.OFFER_ACCEPTED,
+        title: 'Offer accepted', message: (actorName) => `${actorName || 'The other party'} accepted the offer for ${offer.quantity} units of "${listingTitle}" — proceed to payment`,
+        entityType: 'transaction', entityId: transaction._id, entityName: listingTitle,
       });
       return offer;
     } else if (action === 'COUNTER') {
@@ -199,10 +215,10 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
       offer.currentAmount = amount;
       offer.lastActionBy = role;
       offer.history.push({ version: offer.history.length + 1, action: 'COUNTER', by: role, actorId: userId, amount, unitPrice: unitPriceFromAmount(amount, offer.quantity), message: message || '' });
-            const counterRecipient = role === 'buyer' ? offer.seller : offer.buyer;
       await notificationService.createNotification({
-        recipientId: counterRecipient, type: NOTIFICATION_TYPES.OFFER_COUNTERED,
-        title: 'Counter-offer received', message: `New counter-offer: ₹${amount}`, entityType: 'offer', entityId: offer._id,
+        recipientId: otherParty, actorId: userId, type: NOTIFICATION_TYPES.OFFER_COUNTERED,
+        title: 'Counter-offer received', message: (actorName) => `${actorName || 'The other party'} sent a counter-offer of ₹${amount} on "${listingTitle}"`,
+        entityType: 'offer', entityId: offer._id, entityName: listingTitle,
       });
     } else {
       throw new OfferError('Unknown action');
@@ -217,11 +233,6 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
     CANCEL: auditLogConstants.OFFER_CANCELLED,
   };
   await createAuditLog({ req, userId, action: auditActionMap[action], entity: 'offers', entityId: offer._id });
-        await notificationService.createNotification({
-        recipientId: offer.buyer, type: NOTIFICATION_TYPES.OFFER_ACCEPTED,
-        title: 'Offer accepted', message: `Your offer for ${offer.quantity} units was accepted — proceed to payment`,
-        entityType: 'transaction', entityId: offer._id,
-      });
   return offer;
 }
 
