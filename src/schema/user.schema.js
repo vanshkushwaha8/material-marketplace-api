@@ -32,16 +32,26 @@ const userSchema = new mongoose.Schema({
     // are supplied, same reasoning as materialListing.schema.js: an
     // auto-instantiated `{type:'Point'}` with no coordinates would break
     // the 2dsphere index.
+        // Buyer AND Seller both send this — buyers need it for delivery
+    // matching, sellers for the storefront address.
     location: {
-        city: { type: String, trim: true, default: '' },
-        state: { type: String, trim: true, default: '' },
-        pincode: { type: String, trim: true, default: '' },
-        area: { type: String, trim: true, default: '' },
-        geo: {
-            type: { type: String, enum: ['Point'], default: 'Point' },
-            coordinates: { type: [Number], default: undefined },
-        },
+      city: { type: String, trim: true, default: '' },
+      state: { type: String, trim: true, default: '' },
+      pincode: { type: String, trim: true, default: '' },
+      area: { type: String, trim: true, default: '' },
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null },
     },
+    // BUSINESS_STORE only — undefined/ignored for INDIVIDUAL sellers and Buyers.
+    storeName: { type: String, trim: true, default: undefined },
+    businessType: { type: String, default: undefined },
+    storeAddress: { type: String, trim: true, default: undefined },
+    categories: [{ type: String }],
+    pickupAvailable: { type: Boolean, default: undefined },
+    deliveryAvailable: { type: Boolean, default: undefined },
+    panNumber: { type: String, uppercase: true, trim: true, default: undefined },
+    gstRegistered: { type: Boolean, default: undefined },
+    gstin: { type: String, uppercase: true, trim: true, default: undefined },
     profilePicture: {
         type: String,
     },
@@ -103,6 +113,8 @@ const userSchema = new mongoose.Schema({
         default: []
     },
     
+    
+    fcmTokens: [{ type: String }],
     
     status: {
         type: String,

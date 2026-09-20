@@ -61,6 +61,8 @@ const transactionSchema = new mongoose.Schema(
       },
     ],
 
+    project: { type: mongoose.Schema.Types.ObjectId, ref: 'projects', default: null },
+
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },
   },
   { timestamps: true }
