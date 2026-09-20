@@ -57,10 +57,11 @@ async function respondToRequirement({ requirementId, sellerId, body, req }) {
   await requirement.save();
 
   await notificationService.createNotification({
-    recipientId: requirement.buyer, type: NOTIFICATION_TYPES.OFFER_RECEIVED, // reusing — a requirement response is conceptually the same "someone made you an offer" event
-    title: 'Seller responded to your requirement',
-    message: `A seller quoted for your requirement: ${requirement.material}`,
-    entityType: 'listing', entityId: requirement._id,
+    recipientId: requirement.buyer, actorId: sellerId,
+    type: NOTIFICATION_TYPES.OFFER_RECEIVED, // reusing — a requirement response is conceptually the same "someone made you an offer" event
+    title: 'New response to your requirement',
+    message: (actorName) => `${actorName || 'A seller'} responded to your requirement for "${requirement.material}"`,
+    entityType: 'requirement', entityId: requirement._id, entityName: requirement.material,
   });
   return response;
 }

@@ -194,14 +194,18 @@ async function confirmPaymentSuccess({ payment, providerPaymentId, method, req }
   await fresh.save();
 
   await transactionService.markPaymentConfirmed({ transactionId: fresh.transaction, req });
-    await notificationService.createNotification({
+  const paidAmount = `₹${(fresh.amountPaise / 100).toLocaleString('en-IN')}`;
+  await notificationService.createNotification({
     recipientId: fresh.buyer, type: NOTIFICATION_TYPES.PAYMENT_SUCCESS,
-    title: 'Payment successful', message: `Your payment of ₹${(fresh.amountPaise / 100).toLocaleString('en-IN')} was confirmed`,
+    title: 'Payment successful', message: `Your payment of ${paidAmount} was confirmed`,
     entityType: 'transaction', entityId: fresh.transaction,
   });
+  // Actor is the buyer here — they're the one who just paid; the seller is
+  // the receiver being told about it.
   await notificationService.createNotification({
-    recipientId: fresh.seller, type: NOTIFICATION_TYPES.PAYMENT_RECEIVED,
-    title: 'Payment received', message: 'Buyer has paid — please proceed with handover', entityType: 'transaction', entityId: fresh.transaction,
+    recipientId: fresh.seller, actorId: fresh.buyer, type: NOTIFICATION_TYPES.PAYMENT_RECEIVED,
+    title: 'Payment received', message: (actorName) => `${actorName || 'The buyer'} paid ${paidAmount} — please proceed with handover`,
+    entityType: 'transaction', entityId: fresh.transaction,
   });
   await createAuditLog({ req, userId: fresh.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'payments', entityId: fresh._id });
   return fresh;

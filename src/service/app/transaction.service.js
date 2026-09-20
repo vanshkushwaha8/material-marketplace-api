@@ -94,9 +94,12 @@ async function markHandover({ transactionId, userId, note, evidence, req }) {
     txn.history.push({ action: 'HANDOVER_STARTED', by: 'seller' });
     await txn.save();
     await createAuditLog({ req, userId, action: auditLogConstants.HANDOVER_STARTED, entity: 'transactions', entityId: txn._id, metadata: { evidenceCount: txn.handoverEvidence.length } });
+    await txn.populate('listing', 'title');
     await notificationService.createNotification({
-        recipientId: txn.buyer, type: NOTIFICATION_TYPES.HANDOVER_STARTED,
-        title: 'Material handed over', message: 'Seller marked the material as handed over — please confirm receipt', entityType: 'transaction', entityId: txn._id,
+        recipientId: txn.buyer, actorId: userId, type: NOTIFICATION_TYPES.HANDOVER_STARTED,
+        title: 'Material handed over',
+        message: (actorName) => `${actorName || 'The seller'} marked "${txn.listing?.title || 'the material'}" as handed over — please confirm receipt`,
+        entityType: 'transaction', entityId: txn._id, entityName: txn.listing?.title || null,
     });
     return txn;
 }
@@ -120,14 +123,16 @@ async function confirmReceipt({ transactionId, userId, req }) {
     txn.history.push({ action: 'BUYER_CONFIRMED', by: 'buyer' }, { action: 'COMPLETED', by: 'system' });
     await txn.save();
     await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_COMPLETED, entity: 'transactions', entityId: txn._id, metadata: { commission: txn.platformCommissionAmount, settlement: txn.sellerSettlementAmount } });
+    await txn.populate('listing', 'title');
     await notificationService.createNotification({
         recipientId: txn.seller,
+        actorId: userId,
         type: NOTIFICATION_TYPES.RECEIPT_CONFIRMED,
         title: 'Receipt confirmed',
-        message:
-            'Buyer confirmed receipt — your payout is being processed',
+        message: (actorName) => `${actorName || 'The buyer'} confirmed receipt of "${txn.listing?.title || 'the material'}" — your payout is being processed`,
         entityType: 'transaction',
         entityId: txn._id,
+        entityName: txn.listing?.title || null,
     });
 
     // Update linked project progress.
@@ -234,8 +239,10 @@ async function raiseDispute({ transactionId, userId, reason, req }) {
     await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_DISPUTED, entity: 'transactions', entityId: txn._id });
     const otherParty = role === 'buyer' ? txn.seller : txn.buyer;
     await notificationService.createNotification({
-        recipientId: otherParty, type: NOTIFICATION_TYPES.TRANSACTION_DISPUTED,
-        title: 'Dispute raised', message: reason, entityType: 'transaction', entityId: txn._id,
+        recipientId: otherParty, actorId: userId, type: NOTIFICATION_TYPES.TRANSACTION_DISPUTED,
+        title: 'Dispute raised',
+        message: (actorName) => `${actorName || 'The other party'} raised a dispute: ${reason}`,
+        entityType: 'transaction', entityId: txn._id,
     });
     return txn;
 }

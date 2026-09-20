@@ -33,8 +33,11 @@ async function submitReview({ transactionId, userId, body, req }) {
   }
 
   await notificationService.createNotification({
-    recipientId: reviewee, type: NOTIFICATION_TYPES.TRANSACTION_COMPLETED, // reusing — "new review" isn't its own notification type yet, this is the closest fit
-    title: 'You received a new review', message: `You were rated ${body.rating}/5`, entityType: 'transaction', entityId: txn._id,
+    recipientId: reviewee, actorId: userId,
+    type: NOTIFICATION_TYPES.TRANSACTION_COMPLETED, // reusing — "new review" isn't its own notification type yet, this is the closest fit
+    title: 'You received a new review',
+    message: (actorName) => `${actorName || 'The other party'} rated you ${body.rating}/5`,
+    entityType: 'transaction', entityId: txn._id,
   });
   return review;
 }
