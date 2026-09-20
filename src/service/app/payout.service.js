@@ -10,7 +10,8 @@ const { getPayoutAdapter } = require('../../config/integrations.config');
 const configenv = require('../../config/env.config');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
-
+const notificationService = require('./notification.service');
+const { NOTIFICATION_TYPES } = require('../../constants/notification.constants');
 class PayoutError extends Error {
   constructor(message, statusCode = 400) { super(message); this.name = 'PayoutError'; this.statusCode = statusCode; }
 }
@@ -92,6 +93,10 @@ async function initiateProviderPayout({ payout, bankAccount, req }) {
     payout.history.push({ action: 'PAYOUT_FAILED', note: err.message });
     await payout.save();
     await createAuditLog({ req, userId: payout.seller, action: auditLogConstants.PAYOUT_FAILED, entity: 'payouts', entityId: payout._id });
+        await notificationService.createNotification({
+      recipientId: payout.seller, type: NOTIFICATION_TYPES.PAYOUT_FAILED,
+      title: 'Payout failed', message: err.message, entityType: 'payout', entityId: payout._id,
+    });
   }
   return payout;
 }
@@ -103,6 +108,10 @@ async function markPayoutPaid(payout, req) {
   await payout.save();
   await transactionModel.updateOne({ _id: payout.transaction }, { $set: { settlementStatus: SETTLEMENT_STATES.RELEASED, commissionStatus: COMMISSION_STATES.SETTLED } });
   await createAuditLog({ req, userId: payout.seller, action: auditLogConstants.PAYOUT_PAID, entity: 'payouts', entityId: payout._id });
+    await notificationService.createNotification({
+    recipientId: payout.seller, type: NOTIFICATION_TYPES.PAYOUT_PAID,
+    title: 'Payout completed', message: `₹${payout.netPayoutAmount.toLocaleString('en-IN')} has been sent to your bank account`, entityType: 'payout', entityId: payout._id,
+  });
 }
 
 // Called by the seller after fixing bank details (or a retry job) — picks

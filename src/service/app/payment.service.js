@@ -14,7 +14,8 @@ const { getPaymentAdapter, getManualTestPaymentAdapter } = require('../../config
 const transactionService = require('./transaction.service');
 const { createAuditLog, createAuditLogAdmin } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
-
+const notificationService = require('./notification.service');
+const { NOTIFICATION_TYPES } = require('../../constants/notification.constants');
 class PaymentError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -193,6 +194,15 @@ async function confirmPaymentSuccess({ payment, providerPaymentId, method, req }
   await fresh.save();
 
   await transactionService.markPaymentConfirmed({ transactionId: fresh.transaction, req });
+    await notificationService.createNotification({
+    recipientId: fresh.buyer, type: NOTIFICATION_TYPES.PAYMENT_SUCCESS,
+    title: 'Payment successful', message: `Your payment of ₹${(fresh.amountPaise / 100).toLocaleString('en-IN')} was confirmed`,
+    entityType: 'transaction', entityId: fresh.transaction,
+  });
+  await notificationService.createNotification({
+    recipientId: fresh.seller, type: NOTIFICATION_TYPES.PAYMENT_RECEIVED,
+    title: 'Payment received', message: 'Buyer has paid — please proceed with handover', entityType: 'transaction', entityId: fresh.transaction,
+  });
   await createAuditLog({ req, userId: fresh.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'payments', entityId: fresh._id });
   return fresh;
 }
@@ -225,6 +235,21 @@ async function handleWebhook({ rawBody, signature, payload }) {
       { providerOrderId: entity.order_id, status: { $ne: PAYMENT_STATES.SUCCESS } },
       { $set: { status: PAYMENT_STATES.FAILED, failureReason: entity.error_description || 'Payment failed at provider' }, $push: { history: { action: 'PAYMENT_FAILED_WEBHOOK' } } }
     );
+
+ const failedPayment = await paymentModel.findOne({
+    providerOrderId: entity.order_id
+  });
+
+  if (failedPayment) {
+    await notificationService.createNotification({
+      recipientId: failedPayment.buyer,
+      type: NOTIFICATION_TYPES.PAYMENT_FAILED,
+      title: 'Payment failed',
+      message: entity.error_description || 'Your payment could not be completed',
+      entityType: 'transaction',
+      entityId: failedPayment.transaction,
+    });
+  }
   } else if (eventType === 'refund.processed') {
     const payment = await paymentModel.findOne({ providerPaymentId: entity.payment_id });
     // Idempotency: a second refund.processed for an already-REFUNDED

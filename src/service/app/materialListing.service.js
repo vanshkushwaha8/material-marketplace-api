@@ -5,7 +5,7 @@ const offerModel = require('../../model/offer.model');
 const userModel = require('../../model/user.model');
 const storeProfileModel = require('../../model/storeProfile.model');
 const deleteConstants = require('../../constants/delete.constants');
-const { LISTING_STATES, VERIFICATION_STATES, BUYER_VISIBLE_STATES, MAX_LISTING_IMAGES, MAX_LISTING_VIDEOS, SUPPLY_TYPES, INDIVIDUAL_SUPPLY_TYPES } = require('../../constants/materialListing.constants');
+const { LISTING_STATES, VERIFICATION_STATES, BUYER_VISIBLE_STATES, MAX_LISTING_IMAGES, MAX_LISTING_VIDEOS, SUPPLY_TYPES, INDIVIDUAL_SUPPLY_TYPES, CONDITION_TYPES } = require('../../constants/materialListing.constants');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { OFFER_TERMINAL_STATES } = require('../../constants/offer.constants');
 const { validateSpecifications,mergeSpecFieldDefs  } = require('../../validation/app/materialSpecs.validation');
@@ -160,7 +160,7 @@ function buildLocation(body) {
   }
   return location;
 }
-
+  
 async function createListing({ sellerId, body, req }) {
   if ((body.images || []).length > MAX_LISTING_IMAGES) {
     throw new MaterialListingError(`A listing may have at most ${MAX_LISTING_IMAGES} images`);
@@ -175,7 +175,26 @@ async function createListing({ sellerId, body, req }) {
     specifications: body.specifications,
   });
 
-  const seller = await userModel.findById(sellerId).select('sellerType');
+      const seller = await userModel.findById(sellerId).select('sellerType categories');
+  if (seller?.sellerType === 'BUSINESS_STORE') {
+    const businessAllowedConditions = [CONDITION_TYPES.NEW_SURPLUS, CONDITION_TYPES.UNUSED_INVENTORY];
+    if (!businessAllowedConditions.includes(body.condition)) {
+      throw new MaterialListingError('Business/Store sellers can only list new or unused inventory conditions', 400);
+    }
+
+    // ASSUMPTION TO VERIFY: this assumes material_categories.slug follows
+    // the same naming convention as the frontend's STORE_CATEGORIES codes
+    // lowercased-with-hyphens (e.g. code "TMT_STEEL" -> slug "tmt-steel").
+    // If your seeded categories use different slugs, this check will
+    // incorrectly reject everything — confirm slug values before relying
+    // on this in production.
+    const category = await materialCategoryModel.findById(body.category).select('slug');
+    const sellerSlugs = (seller.categories || []).map((c) => c.toLowerCase().replace(/_/g, '-'));
+    if (category && sellerSlugs.length && !sellerSlugs.includes(category.slug)) {
+      throw new MaterialListingError('This category is not registered for your store — update your store categories to list it', 400);
+    }
+  }
+
   const supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
 
   const [images, videos, invoiceProof] = await Promise.all([

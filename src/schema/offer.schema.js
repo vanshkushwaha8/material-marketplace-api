@@ -32,6 +32,11 @@ const offerSchema = new mongoose.Schema(
       },
     ],
 
+        // Optional — buyer may tag this purchase to one of their Projects at
+    // offer-creation time. Never required, since not every purchase is
+    // project-linked.
+    project: { type: mongoose.Schema.Types.ObjectId, ref: 'projects', default: null },
+
     expiresAt: { type: Date, required: true },
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },
   },

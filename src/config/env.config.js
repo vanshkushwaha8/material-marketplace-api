@@ -89,6 +89,13 @@ const configEnv = {
   PROJECT_IMAGE_MAX_COUNT: process.env.PROJECT_IMAGE_MAX_COUNT || '',
   PROJECT_IMAGE_MAX_SIZE_MB: process.env.PROJECT_IMAGE_MAX_SIZE_MB || '',
   MARKETPLACE_COMMISSION_PCT: process.env.MARKETPLACE_COMMISSION_PCT || '8.9',
+
+  FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID || '',
+  FIREBASE_CLIENT_EMAIL: process.env.FIREBASE_CLIENT_EMAIL || '',
+  // Private keys in .env files always arrive with literal "\n" instead of
+  // real newlines — this is the standard fix every Firebase Admin setup needs.
+  FIREBASE_PRIVATE_KEY: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+
   RESERVATION_EXPIRY_HOURS: process.env.RESERVATION_EXPIRY_HOURS || '48',
   PAYMENT_PROVIDER: process.env.PAYMENT_PROVIDER || '',
   PAYMENT_KEY_ID: process.env.PAYMENT_KEY_ID || '',

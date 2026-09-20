@@ -11,6 +11,8 @@ const auditLogConstants = require('../../constants/auditLogConstants');
 const transactionModel = require('../../model/transaction.model');
 const { TRANSACTION_STATES, RESERVATION_EXPIRY_HOURS } = require('../../constants/transaction.constants')
 const { toPaise, fromPaise, unitPriceFromAmount } = require('../../helper/money.helper');
+const notificationService = require('./notification.service');
+const { NOTIFICATION_TYPES } = require('../../constants/notification.constants');
 class OfferError extends Error {
   constructor(message, statusCode = 400, errorCode = null) {
     super(message);
@@ -27,43 +29,126 @@ function roleOf(offer, userId) {
 }
 
 async function createOffer({ buyerId, body, req }) {
-  if (!mongoose.Types.ObjectId.isValid(body.listing)) throw new OfferError('Invalid listing id');
-  const listing = await materialListingModel.findOne({ _id: body.listing, is_deleted: deleteConstants.NOT_DELETED });
-  if (!listing) throw new OfferError('Listing not found', 404);
-  if (listing.status !== LISTING_STATES.LIVE) throw new OfferError('This listing is not currently accepting offers', 409);
-  if (String(listing.seller) === String(buyerId)) throw new OfferError('You cannot make an offer on your own listing', 403);
-  const available = listing.availableQuantity ?? listing.quantity;
-  if (body.quantity > available) throw new OfferError(`Only ${available} ${listing.unit} available`, 400);
-  // listing.price is always PRICE PER UNIT. For a non-negotiable listing the
-  // buyer's total offer amount must equal unitPrice × quantity — comparing
-  // amount directly to listing.price (as this used to do) only worked by
-  // accident for quantity === 1 and silently under/over-charged everyone else.
-  const expectedTotal = fromPaise(Math.round(toPaise(listing.price) * Number(body.quantity)));
-  if (!listing.negotiable && fromPaise(toPaise(body.amount)) !== expectedTotal) {
-    throw new OfferError(`This listing is not negotiable — offer must be ₹${expectedTotal} (₹${listing.price}/${listing.unit} × ${body.quantity})`, 400);
+  if (!mongoose.Types.ObjectId.isValid(body.listing)) {
+    throw new OfferError('Invalid listing id');
+  }
+
+  const listing = await materialListingModel.findOne({
+    _id: body.listing,
+    is_deleted: deleteConstants.NOT_DELETED,
+  });
+
+  if (!listing) {
+    throw new OfferError('Listing not found', 404);
+  }
+
+  if (listing.status !== LISTING_STATES.LIVE) {
+    throw new OfferError(
+      'This listing is not currently accepting offers',
+      409
+    );
+  }
+
+  if (String(listing.seller) === String(buyerId)) {
+    throw new OfferError(
+      'You cannot make an offer on your own listing',
+      403
+    );
+  }
+
+  const available =
+    listing.availableQuantity ?? listing.quantity;
+
+  if (body.quantity > available) {
+    throw new OfferError(
+      `Only ${available} ${listing.unit} available`,
+      400
+    );
+  }
+
+  const expectedTotal = fromPaise(
+    Math.round(
+      toPaise(listing.price) * Number(body.quantity)
+    )
+  );
+
+  if (
+    !listing.negotiable &&
+    fromPaise(toPaise(body.amount)) !== expectedTotal
+  ) {
+    throw new OfferError(
+      `This listing is not negotiable — offer must be ₹${expectedTotal} (₹${listing.price}/${listing.unit} × ${body.quantity})`,
+      400
+    );
   }
 
   const existing = await offerModel.findOne({
-    listing: listing._id, buyer: buyerId,
+    listing: listing._id,
+    buyer: buyerId,
     status: { $nin: OFFER_TERMINAL_STATES },
     is_deleted: deleteConstants.NOT_DELETED,
   });
-  if (existing) throw new OfferError('You already have an active offer on this listing', 409);
+
+  if (existing) {
+    throw new OfferError(
+      'You already have an active offer on this listing',
+      409
+    );
+  }
 
   const offer = await offerModel.create({
     listing: listing._id,
     buyer: buyerId,
     seller: listing.seller,
+
+    // Project linked to this material requirement.
+    // Optional — normal marketplace offers can still have null.
+    project: body.project || null,
+
     listedPrice: listing.price,
     quantity: body.quantity,
     currentAmount: body.amount,
     lastActionBy: 'buyer',
     status: OFFER_STATES.PENDING,
-    history: [{ version: 1, action: 'OFFER', by: 'buyer', actorId: buyerId, amount: body.amount, unitPrice: unitPriceFromAmount(body.amount, body.quantity), message: body.message || '' }],
-    expiresAt: new Date(Date.now() + DEFAULT_OFFER_EXPIRY_HOURS * 60 * 60 * 1000),
+
+    history: [
+      {
+        version: 1,
+        action: 'OFFER',
+        by: 'buyer',
+        actorId: buyerId,
+        amount: body.amount,
+        unitPrice: unitPriceFromAmount(
+          body.amount,
+          body.quantity
+        ),
+        message: body.message || '',
+      },
+    ],
+
+    expiresAt: new Date(
+      Date.now() +
+        DEFAULT_OFFER_EXPIRY_HOURS * 60 * 60 * 1000
+    ),
   });
 
-  await createAuditLog({ req, userId: buyerId, action: auditLogConstants.OFFER_CREATED, entity: 'offers', entityId: offer._id });
+  await createAuditLog({
+    req,
+    userId: buyerId,
+    action: auditLogConstants.OFFER_CREATED,
+    entity: 'offers',
+    entityId: offer._id,
+  });
+
+  await notificationService.createNotification({
+    recipientId: listing.seller,
+    type: NOTIFICATION_TYPES.OFFER_RECEIVED,
+    title: 'New offer received',
+    message: `You received an offer of ₹${body.amount} for ${listing.title}`,
+    entityType: 'offer',
+    entityId: offer._id,
+  });
+
   return offer;
 }
 
@@ -87,6 +172,10 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
   } else if (action === 'REJECT') {
     offer.status = OFFER_STATES.REJECTED;
     offer.history.push({ version: offer.history.length + 1, action: 'REJECT', by: role, actorId: userId, message: message || '' });
+        await notificationService.createNotification({
+      recipientId: offer.buyer, type: NOTIFICATION_TYPES.OFFER_REJECTED,
+      title: 'Offer rejected', message: 'The seller rejected your offer', entityType: 'offer', entityId: offer._id,
+    });
   } else {
     if (offer.lastActionBy === role) {
       throw new OfferError('Waiting on the other party to respond to your last offer', 409);
@@ -99,12 +188,22 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
       await offer.save();
       await createTransactionForAccept(offer, listing, req);
       await createAuditLog({ req, userId, action: auditLogConstants.OFFER_ACCEPTED, entity: 'offers', entityId: offer._id });
+            await notificationService.createNotification({
+        recipientId: offer.buyer, type: NOTIFICATION_TYPES.OFFER_ACCEPTED,
+        title: 'Offer accepted', message: `Your offer for ${offer.quantity} units was accepted — proceed to payment`,
+        entityType: 'transaction', entityId: offer._id,
+      });
       return offer;
     } else if (action === 'COUNTER') {
       offer.status = OFFER_STATES.COUNTERED;
       offer.currentAmount = amount;
       offer.lastActionBy = role;
       offer.history.push({ version: offer.history.length + 1, action: 'COUNTER', by: role, actorId: userId, amount, unitPrice: unitPriceFromAmount(amount, offer.quantity), message: message || '' });
+            const counterRecipient = role === 'buyer' ? offer.seller : offer.buyer;
+      await notificationService.createNotification({
+        recipientId: counterRecipient, type: NOTIFICATION_TYPES.OFFER_COUNTERED,
+        title: 'Counter-offer received', message: `New counter-offer: ₹${amount}`, entityType: 'offer', entityId: offer._id,
+      });
     } else {
       throw new OfferError('Unknown action');
     }
@@ -118,6 +217,11 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
     CANCEL: auditLogConstants.OFFER_CANCELLED,
   };
   await createAuditLog({ req, userId, action: auditActionMap[action], entity: 'offers', entityId: offer._id });
+        await notificationService.createNotification({
+        recipientId: offer.buyer, type: NOTIFICATION_TYPES.OFFER_ACCEPTED,
+        title: 'Offer accepted', message: `Your offer for ${offer.quantity} units was accepted — proceed to payment`,
+        entityType: 'transaction', entityId: offer._id,
+      });
   return offer;
 }
 
@@ -164,27 +268,66 @@ async function reserveInventoryForAccept(offer, req) {
 // Compensates the reservation above if transaction creation fails, since
 // this project doesn't use multi-document Mongo transactions elsewhere —
 // this keeps listing inventory as the single source of truth even without one.
-async function createTransactionForAccept(offer, listing, req) {
+async function createTransactionForAccept(
+  offer,
+  listing,
+  req
+) {
   try {
     const transaction = await transactionModel.create({
       listing: listing._id,
       offer: offer._id,
+      project: offer.project,
+
       buyer: offer.buyer,
       seller: offer.seller,
+
       agreedQuantity: offer.quantity,
       agreedAmount: offer.currentAmount,
-      unitPrice: unitPriceFromAmount(offer.currentAmount, offer.quantity),
+      unitPrice: unitPriceFromAmount(
+        offer.currentAmount,
+        offer.quantity
+      ),
+
       status: TRANSACTION_STATES.PAYMENT_PENDING,
-      reservationExpiresAt: new Date(Date.now() + RESERVATION_EXPIRY_HOURS * 60 * 60 * 1000),
-      history: [{ action: 'CREATED', by: 'system', note: 'Created on offer acceptance' }],
+
+      reservationExpiresAt: new Date(
+        Date.now() +
+          RESERVATION_EXPIRY_HOURS * 60 * 60 * 1000
+      ),
+
+      history: [
+        {
+          action: 'CREATED',
+          by: 'system',
+          note: 'Created on offer acceptance',
+        },
+      ],
     });
-    await createAuditLog({ req, userId: offer.seller, action: auditLogConstants.TRANSACTION_CREATED, entity: 'transactions', entityId: transaction._id });
+
+    await createAuditLog({
+      req,
+      userId: offer.seller,
+      action: auditLogConstants.TRANSACTION_CREATED,
+      entity: 'transactions',
+      entityId: transaction._id,
+    });
+
     return transaction;
   } catch (err) {
     await materialListingModel.updateOne(
       { _id: listing._id },
-      { $inc: { availableQuantity: offer.quantity, reservedQuantity: -offer.quantity }, ...(listing.status === LISTING_STATES.SOLD_OUT ? { status: LISTING_STATES.LIVE } : {}) }
+      {
+        $inc: {
+          availableQuantity: offer.quantity,
+          reservedQuantity: -offer.quantity,
+        },
+        ...(listing.status === LISTING_STATES.SOLD_OUT
+          ? { status: LISTING_STATES.LIVE }
+          : {}),
+      }
     );
+
     throw err;
   }
 }
