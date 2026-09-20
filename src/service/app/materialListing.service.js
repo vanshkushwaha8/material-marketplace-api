@@ -15,6 +15,55 @@ const auditLogConstants = require('../../constants/auditLogConstants');
 const fs = require('fs/promises');
 const path = require('path');
 
+// Buyer-facing "N km away" on the card (search()'s $near branch, spec
+// section 13) — plain-JS great-circle distance from the buyer's own
+// query coordinates to each listing's stored geo point, rather than a
+// second geospatial query. $near already filters/orders by proximity
+// server-side; this just turns that into the actual number the card
+// shows, using the exact coordinates the query itself received.
+function haversineKm([lng1, lat1], [lng2, lat2]) {
+  const R = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Buyer search always shows LIVE listings before SOLD_OUT ones — a
+// sold-out card sitting above ones actually in stock just makes buyers
+// scroll past it to find what they can buy. This is NOT a `.sort()` on
+// `status` (that would rely on "LIVE" sorting before "SOLD_OUT"
+// alphabetically — an accident of spelling, not a real rule, and it
+// silently breaks if another buyer-visible status is ever added). It
+// runs the same find()/populate()/sort() against each status bucket
+// separately and stitches the requested page/limit window across the
+// two, so pagination stays exact even when a page straddles the
+// boundary between "still in stock" and "sold out".
+async function fetchStatusOrderedPage({ baseQuery, populate, sort, skip, limit }) {
+  const liveQuery = { ...baseQuery, status: LISTING_STATES.LIVE };
+  const soldOutQuery = { ...baseQuery, status: LISTING_STATES.SOLD_OUT };
+  const liveCount = await materialListingModel.countDocuments(liveQuery);
+
+  const runQuery = (q, qSkip, qLimit) => {
+    let builder = materialListingModel.find(q).select('-stateHistory');
+    for (const [path, select] of populate) builder = builder.populate(path, select);
+    return builder.sort(sort).skip(qSkip).limit(qLimit).lean();
+  };
+
+  const docs = [];
+  if (skip < liveCount) {
+    docs.push(...(await runQuery(liveQuery, skip, Math.min(limit, liveCount - skip))));
+  }
+  const remaining = limit - docs.length;
+  if (remaining > 0) {
+    docs.push(...(await runQuery(soldOutQuery, Math.max(0, skip - liveCount), remaining)));
+  }
+  return docs;
+}
+
 class MaterialListingError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -391,22 +440,47 @@ async function search(filters) {
   // Proximity search (spec section 16) uses $geoNear-style $near, which
   // requires a standalone query (no $text alongside it in the same find),
   // so it takes its own path rather than folding into the sort switch below.
+  // Seller name/join-date is buyer-facing (ListingCard's seller-identity
+  // row, EnquireModal's success message) — only fullName/createdAt, never
+  // email/phone, to the public search response. sellerType drives the
+  // Individual/Business card treatment (attachStoreProfiles below).
+  const populate = [
+    ['category', 'name slug'],
+    ['seller', 'fullName sellerType createdAt'],
+  ];
+  const skip = (pageNum - 1) * pageLimit;
+
   if (lat != null && lng != null && radiusKm) {
-    query['location.geo'] = {
+    const baseQuery = { ...query };
+    delete baseQuery.status;
+    baseQuery['location.geo'] = {
       $near: {
         $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
         $maxDistance: Number(radiusKm) * 1000,
       },
     };
     const [rawData, count] = await Promise.all([
-      // Seller name is buyer-facing (ListingCard's seller-identity row,
-      // EnquireModal's success message) — only fullName, never email/phone,
-      // to the public search response. sellerType drives the
-      // Individual/Business card treatment (attachStoreProfiles below).
-      materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName sellerType').skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
-      materialListingModel.countDocuments(query),
+      // $near already returns each bucket nearest-first, so no explicit
+      // sort is passed — fetchStatusOrderedPage only reorders LIVE vs
+      // SOLD_OUT, not the proximity ordering within either bucket.
+      fetchStatusOrderedPage({ baseQuery, populate, sort: undefined, skip, limit: pageLimit }),
+      // Count must include the same $near radius filter baseQuery carries
+      // (status re-added as the combined LIVE/SOLD_OUT set, same as the
+      // unfiltered `query` above) — otherwise "N results" would count
+      // listings outside the search radius.
+      materialListingModel.countDocuments({ ...baseQuery, status: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT] }),
     ]);
-    return { getData: await attachStoreProfiles(rawData), count, page: pageNum, limit: pageLimit };
+    // Real backend-computed "N km away" (spec section 13) from the same
+    // coordinates $near just queried with — not a second geo lookup, just
+    // turning the query's own inputs into the number the card displays.
+    const origin = [Number(lng), Number(lat)];
+    const withDistance = rawData.map((listing) => ({
+      ...listing,
+      distanceKm: listing.location?.geo?.coordinates
+        ? Math.round(haversineKm(origin, listing.location.geo.coordinates) * 10) / 10
+        : undefined,
+    }));
+    return { getData: await attachStoreProfiles(withDistance), count, page: pageNum, limit: pageLimit };
   }
 
   const sortMap = {
@@ -414,9 +488,11 @@ async function search(filters) {
     price_asc: { price: 1 },
     price_desc: { price: -1 },
   };
+  const baseQuery = { ...query };
+  delete baseQuery.status;
 
   const [rawData, count] = await Promise.all([
-    materialListingModel.find(query).select('-stateHistory').populate('category', 'name slug').populate('seller', 'fullName sellerType').sort(sortMap[sort] || sortMap.newest).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
+    fetchStatusOrderedPage({ baseQuery, populate, sort: sortMap[sort] || sortMap.newest, skip, limit: pageLimit }),
     materialListingModel.countDocuments(query),
   ]);
   return { getData: await attachStoreProfiles(rawData), count, page: pageNum, limit: pageLimit };
