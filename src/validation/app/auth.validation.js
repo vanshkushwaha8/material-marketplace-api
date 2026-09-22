@@ -2,7 +2,7 @@ const Joi = require('joi');
 const { isPasswordSimilarToUserInfo } = require('../../utils/passwordSimilarity');
 const { KNOWN_COUNTRY_CODES } = require('../../config/supportedCountries');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
-const { BUSINESS_TYPES, STORE_CATEGORIES } = require('../../constants/storeProfile.constants');
+const { INDIAN_STATES, INDIA_LAT_RANGE, INDIA_LNG_RANGE } = require('../../constants/indianStates.constants');
 class authValidation {
     static get passwordRule() {
         return Joi.string()
@@ -122,13 +122,36 @@ class authValidation {
                 }),
             // Seller-only sub-type — see sellerType.constants.js. Kept as
             // its own field, never merged with `userType`.
-                        location: Joi.object({
-                city: Joi.string().trim().required(),
-                state: Joi.string().trim().required(),
-                pincode: Joi.string().trim().required(),
+            // India-only marketplace (see countryOfResidence default
+            // above) — state must be a real Indian state/UT, never a
+            // free-typed string; the frontend's cascading State→City
+            // selects (see MarketplaceRegister.jsx) already guarantee
+            // this, this is the backend not trusting that alone. City is
+            // still just a required non-empty string here rather than a
+            // hardcoded list — validating it truly belongs to the given
+            // state would need the same city dataset the frontend uses
+            // (country-state-city) added as a backend dependency too;
+            // left as a follow-up rather than assumed, see indianStates.constants.js.
+            location: Joi.object({
+                city: Joi.string().trim().min(2).max(100).required(),
+                state: Joi.string().trim().valid(...INDIAN_STATES).required()
+                    .messages({ 'any.only': 'Select a valid Indian state' }),
+                pincode: Joi.string().trim().pattern(/^[1-9][0-9]{5}$/).required()
+                    .messages({ 'string.pattern.base': 'Enter a valid 6-digit pincode' }),
                 area: Joi.string().trim().allow('').optional(),
-                latitude: Joi.number().optional(),
-                longitude: Joi.number().optional(),
+                // Optional full address line + structured metadata from the
+                // address-autocomplete suggestion (section 4) — available to
+                // every registrant, not just Business/Store (section 5).
+                address: Joi.string().trim().max(300).allow('').optional(),
+                addressMeta: Joi.object({
+                    formattedAddress: Joi.string().trim().allow('').optional(),
+                    postalCode: Joi.string().trim().allow('').optional(),
+                    country: Joi.string().trim().allow('').optional(),
+                }).optional(),
+                latitude: Joi.number().min(INDIA_LAT_RANGE[0]).max(INDIA_LAT_RANGE[1]).optional()
+                    .messages({ 'number.min': 'Location looks outside India', 'number.max': 'Location looks outside India' }),
+                longitude: Joi.number().min(INDIA_LNG_RANGE[0]).max(INDIA_LNG_RANGE[1]).optional()
+                    .messages({ 'number.min': 'Location looks outside India', 'number.max': 'Location looks outside India' }),
             }).required(),
 
             sellerType: Joi.string()
@@ -138,12 +161,27 @@ class authValidation {
 
             storeName: Joi.string().trim()
                 .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() }),
-            businessType: Joi.string()
+            // Admin-managed collections (business_types / store_categories)
+            // — IDs only, never free-typed names. Existence + active state
+            // is checked against the database in authController.register
+            // before authService.register ever runs (section 6).
+            businessTypeId: Joi.string().pattern(/^[a-fA-F0-9]{24}$/)
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() })
+                .messages({ 'string.pattern.base': 'Invalid business type', 'any.required': 'Select a business type' }),
+            storeAddress: Joi.string().trim().min(5).max(300)
                 .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() }),
-            storeAddress: Joi.string().trim()
-                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() }),
-            categories: Joi.array().items(Joi.string())
-                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.min(1).required(), otherwise: Joi.forbidden() }),
+            // Structured metadata from the address-autocomplete suggestion
+            // picked for `storeAddress` (section 4) — distinct from
+            // `location.addressMeta` above, which covers the *personal*
+            // address every role can optionally supply.
+            addressMeta: Joi.object({
+                formattedAddress: Joi.string().trim().allow('').optional(),
+                postalCode: Joi.string().trim().allow('').optional(),
+                country: Joi.string().trim().allow('').optional(),
+            }).when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional(), otherwise: Joi.forbidden() }),
+            categoryIds: Joi.array().items(Joi.string().pattern(/^[a-fA-F0-9]{24}$/))
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.array().min(1).required(), otherwise: Joi.forbidden() })
+                .messages({ 'array.min': 'Select at least one category you sell' }),
             pickupAvailable: Joi.boolean()
                 .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.required(), otherwise: Joi.forbidden() }),
             deliveryAvailable: Joi.boolean()

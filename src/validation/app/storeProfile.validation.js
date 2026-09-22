@@ -1,21 +1,32 @@
 const Joi = require('joi');
-const { BUSINESS_TYPES, STORE_CATEGORIES } = require('../../constants/storeProfile.constants');
+const { INDIAN_STATES, INDIA_LAT_RANGE, INDIA_LNG_RANGE } = require('../../constants/indianStates.constants');
 
 class storeProfileValidation {
   static update() {
     return Joi.object({
       storeName: Joi.string().trim().min(2).max(150).optional(),
-      businessType: Joi.string().valid(...Object.values(BUSINESS_TYPES)).optional(),
+      // Admin-managed collections — IDs only. Existence + active state
+      // checked in storeProfile.service.js before anything is written.
+      businessTypeId: Joi.string().pattern(/^[a-fA-F0-9]{24}$/).optional()
+        .messages({ 'string.pattern.base': 'Invalid business type' }),
       location: Joi.object({
-        city: Joi.string().trim().required(),
-        state: Joi.string().trim().required(),
-        pincode: Joi.string().trim().allow(''),
+        city: Joi.string().trim().min(2).max(100).required(),
+        state: Joi.string().trim().valid(...INDIAN_STATES).required()
+          .messages({ 'any.only': 'Select a valid Indian state' }),
+        pincode: Joi.string().trim().pattern(/^[1-9][0-9]{5}$/).allow('')
+          .messages({ 'string.pattern.base': 'Enter a valid 6-digit pincode' }),
         area: Joi.string().trim().allow(''),
-        latitude: Joi.number().min(-90).max(90).allow(null),
-        longitude: Joi.number().min(-180).max(180).allow(null),
+        latitude: Joi.number().min(INDIA_LAT_RANGE[0]).max(INDIA_LAT_RANGE[1]).allow(null),
+        longitude: Joi.number().min(INDIA_LNG_RANGE[0]).max(INDIA_LNG_RANGE[1]).allow(null),
       }).optional(),
       address: Joi.string().trim().min(5).max(300).optional(),
-      categories: Joi.array().items(Joi.string().valid(...Object.values(STORE_CATEGORIES))).min(1).optional(),
+      addressMeta: Joi.object({
+        formattedAddress: Joi.string().trim().allow('').optional(),
+        postalCode: Joi.string().trim().allow('').optional(),
+        country: Joi.string().trim().allow('').optional(),
+      }).optional(),
+      categoryIds: Joi.array().items(Joi.string().pattern(/^[a-fA-F0-9]{24}$/)).min(1).optional()
+        .messages({ 'array.min': 'Select at least one category you sell' }),
       pickupAvailable: Joi.boolean().optional(),
       deliveryAvailable: Joi.boolean().optional(),
       panNumber: Joi.string().trim().uppercase().pattern(/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/).optional()

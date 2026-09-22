@@ -175,7 +175,7 @@ async function createListing({ sellerId, body, req }) {
     specifications: body.specifications,
   });
 
-      const seller = await userModel.findById(sellerId).select('sellerType categories');
+      const seller = await userModel.findById(sellerId).select('sellerType');
   if (seller?.sellerType === 'BUSINESS_STORE') {
     const businessAllowedConditions = [CONDITION_TYPES.NEW_SURPLUS, CONDITION_TYPES.UNUSED_INVENTORY];
     if (!businessAllowedConditions.includes(body.condition)) {
@@ -183,13 +183,22 @@ async function createListing({ sellerId, body, req }) {
     }
 
     // ASSUMPTION TO VERIFY: this assumes material_categories.slug follows
-    // the same naming convention as the frontend's STORE_CATEGORIES codes
-    // lowercased-with-hyphens (e.g. code "TMT_STEEL" -> slug "tmt-steel").
-    // If your seeded categories use different slugs, this check will
-    // incorrectly reject everything — confirm slug values before relying
-    // on this in production.
-    const category = await materialCategoryModel.findById(body.category).select('slug');
-    const sellerSlugs = (seller.categories || []).map((c) => c.toLowerCase().replace(/_/g, '-'));
+    // the same naming convention as the store_categories admin creates
+    // (see storeCategory.model.js) lowercased-with-hyphens (e.g. a store
+    // category named "TMT Steel" -> slug "tmt-steel"). If an admin gives
+    // a store category a differently-formatted slug than the matching
+    // material_categories entry, this check will incorrectly reject
+    // everything — confirm slug values line up before relying on this
+    // in production. This was previously checked against a hardcoded
+    // STORE_CATEGORIES enum on the user doc; that enum and its
+    // duplicated copy on the user doc are gone (see user.schema.js) —
+    // the seller's declared store categories now live only on their
+    // StoreProfile (see storeProfile.schema.js's `categoryIds`).
+    const [category, storeProfile] = await Promise.all([
+      materialCategoryModel.findById(body.category).select('slug'),
+      storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED }).populate('categoryIds', 'slug'),
+    ]);
+    const sellerSlugs = (storeProfile?.categoryIds || []).map((c) => c.slug);
     if (category && sellerSlugs.length && !sellerSlugs.includes(category.slug)) {
       throw new MaterialListingError('This category is not registered for your store — update your store categories to list it', 400);
     }
