@@ -59,6 +59,12 @@ class materialListingValidation {
       search: Joi.string().trim().allow(''),
       category: objectId().allow(''),
       subcategory: objectId().allow(''),
+      // Lets a buyer browse one specific seller's live listings (product
+      // details page's "Sold By" → view all their listings) — the service
+      // layer (materialListing.service.js#search) already filters on this
+      // for the business-store product grid; it just wasn't reachable from
+      // the public query string until now.
+      sellerId: objectId().allow(''),
       condition: Joi.string().valid(...Object.values(CONDITION_TYPES)).allow(''),
       supplyType: Joi.string().valid(...Object.values(SUPPLY_TYPES)).allow(''),
       sellerType: Joi.string().valid(...Object.values(SELLER_TYPES)).allow(''),

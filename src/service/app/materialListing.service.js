@@ -175,7 +175,7 @@ async function createListing({ sellerId, body, req }) {
     specifications: body.specifications,
   });
 
-      const seller = await userModel.findById(sellerId).select('sellerType categories');
+      const seller = await userModel.findById(sellerId).select('sellerType');
   if (seller?.sellerType === 'BUSINESS_STORE') {
     const businessAllowedConditions = [CONDITION_TYPES.NEW_SURPLUS, CONDITION_TYPES.UNUSED_INVENTORY];
     if (!businessAllowedConditions.includes(body.condition)) {
@@ -183,13 +183,22 @@ async function createListing({ sellerId, body, req }) {
     }
 
     // ASSUMPTION TO VERIFY: this assumes material_categories.slug follows
-    // the same naming convention as the frontend's STORE_CATEGORIES codes
-    // lowercased-with-hyphens (e.g. code "TMT_STEEL" -> slug "tmt-steel").
-    // If your seeded categories use different slugs, this check will
-    // incorrectly reject everything — confirm slug values before relying
-    // on this in production.
-    const category = await materialCategoryModel.findById(body.category).select('slug');
-    const sellerSlugs = (seller.categories || []).map((c) => c.toLowerCase().replace(/_/g, '-'));
+    // the same naming convention as the store_categories admin creates
+    // (see storeCategory.model.js) lowercased-with-hyphens (e.g. a store
+    // category named "TMT Steel" -> slug "tmt-steel"). If an admin gives
+    // a store category a differently-formatted slug than the matching
+    // material_categories entry, this check will incorrectly reject
+    // everything — confirm slug values line up before relying on this
+    // in production. This was previously checked against a hardcoded
+    // STORE_CATEGORIES enum on the user doc; that enum and its
+    // duplicated copy on the user doc are gone (see user.schema.js) —
+    // the seller's declared store categories now live only on their
+    // StoreProfile (see storeProfile.schema.js's `categoryIds`).
+    const [category, storeProfile] = await Promise.all([
+      materialCategoryModel.findById(body.category).select('slug'),
+      storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED }).populate('categoryIds', 'slug'),
+    ]);
+    const sellerSlugs = (storeProfile?.categoryIds || []).map((c) => c.slug);
     if (category && sellerSlugs.length && !sellerSlugs.includes(category.slug)) {
       throw new MaterialListingError('This category is not registered for your store — update your store categories to list it', 400);
     }
@@ -373,11 +382,11 @@ async function attachStoreProfile(listing) {
   if (listing?.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) return listing;
   const store = await storeProfileModel
     .findOne({ seller: listing.seller._id, is_deleted: deleteConstants.NOT_DELETED })
-    .select('storeName verificationStatus')
+    .select('storeName verificationStatus gstRegistered')
     .lean();
   if (store) {
     if (listing.toObject) listing = listing.toObject();
-    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus };
+    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered };
   }
   return listing;
 }
@@ -414,7 +423,26 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   if (!isOwner && !viewerIsAdmin) {
     materialListingModel.updateOne({ _id: listing._id }, { $inc: { viewCount: 1 } }).catch(() => {});
   }
-  return attachStoreProfile(listing);
+
+  // Real "N products" count for the detail page's "Sold By" card — same
+  // LIVE + not-deleted scoping the public search endpoint itself uses,
+  // just narrowed to this one seller. Only computed here (single listing),
+  // never per-card in search results, so it doesn't add an extra query per
+  // row on the browse page.
+  const sellerProductsCount = await materialListingModel.countDocuments({
+    seller: listing.seller._id,
+    status: LISTING_STATES.LIVE,
+    is_deleted: deleteConstants.NOT_DELETED,
+  });
+
+  const withStoreProfile = await attachStoreProfile(listing);
+  if (withStoreProfile.toObject) {
+    const plain = withStoreProfile.toObject();
+    plain.sellerProductsCount = sellerProductsCount;
+    return plain;
+  }
+  withStoreProfile.sellerProductsCount = sellerProductsCount;
+  return withStoreProfile;
 }
 
 async function search(filters) {

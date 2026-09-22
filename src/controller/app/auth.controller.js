@@ -47,6 +47,21 @@ class authController {
       if (!await userConsentModel.findOne({ _id: request.body.privacyPolicy, status: statusConstants.active, is_deleted: deleteConstants.NOT_DELETED })) {
         return responseConstants.Forbidden(response, "Privacy Policy consent not found or inactive", null, statusCodes.NOT_FOUND);
       }
+      // Section 6: never trust the frontend dropdown's businessTypeId/
+      // categoryIds alone — confirm they exist and are still active
+      // before creating anything. Same "check consent docs before
+      // calling the service" shape as the terms/privacy checks above.
+      if (request.body.sellerType === 'BUSINESS_STORE') {
+        try {
+          await authService.assertBusinessTypeActive(request.body.businessTypeId);
+          await authService.assertStoreCategoriesActive(request.body.categoryIds);
+        } catch (error) {
+          if (error instanceof authService.RegisterError) {
+            return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+          }
+          throw error;
+        }
+      }
       const data = await authService.register(request);
       await createAuditLog({ req: request, userId: data._id, action: auditLogConstants.REGISTER, entity: CollectionName.users, entityId: data._id });
       setAuthCookie(response, data.token);

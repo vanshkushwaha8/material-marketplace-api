@@ -26,8 +26,39 @@ const TwofaModel = require('../../model/twofa.model');
 const twofaService = require('./twofa.service');
 const activitySessionHelper = require('../../helper/activitySession.helper');
 const storeProfileModel = require('../../model/storeProfile.model');
+const businessTypeModel = require('../../model/businessType.model');
+const storeCategoryModel = require('../../model/storeCategory.model');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { STORE_VERIFICATION_STATES } = require('../../constants/storeProfile.constants');
+
+class RegisterError extends Error {
+    constructor(message, statusCode = 400) {
+        super(message);
+        this.name = 'RegisterError';
+        this.statusCode = statusCode;
+    }
+}
+
+// Section 6's "the backend must verify the referenced Store Category /
+// Business Type exists and is active" — never trust the frontend
+// dropdown's IDs alone. Throws RegisterError (caught in
+// auth.controller.js#register the same way it already catches the
+// consent-document checks) rather than a raw AppError, so callers get a
+// clear 400/404 instead of registration silently succeeding with a
+// dangling or disabled reference.
+async function assertBusinessTypeActive(businessTypeId) {
+    const type = await businessTypeModel.findOne({ _id: businessTypeId, status: 'active', is_deleted: deleteConstants.NOT_DELETED });
+    if (!type) throw new RegisterError('Selected business type was not found or is no longer active', 404);
+    return type;
+}
+
+async function assertStoreCategoriesActive(categoryIds = []) {
+    const categories = await storeCategoryModel.find({ _id: { $in: categoryIds }, status: 'active', is_deleted: deleteConstants.NOT_DELETED });
+    if (categories.length !== categoryIds.length) {
+        throw new RegisterError('One or more selected store categories were not found or are no longer active', 404);
+    }
+    return categories;
+}
 
 // Mirrors materialListing.service.js's buildLocation() — `geo` is only
 // set when real coordinates were supplied ("Use Current Location"),
@@ -52,6 +83,9 @@ const normalizeConsentLanguage = (lang) => {
     return SUPPORTED_CONSENT_LANGUAGES.includes(base) ? base : "en";
 };
 const authService = {};
+authService.RegisterError = RegisterError;
+authService.assertBusinessTypeActive = assertBusinessTypeActive;
+authService.assertStoreCategoriesActive = assertStoreCategoriesActive;
 authService.register = async (request) => {
     const { body } = request;
     const { userType, sellerType } = body;
@@ -76,13 +110,21 @@ authService.register = async (request) => {
     // UNVERIFIED: there is no real store-verification step implemented,
     // so this must never be set to VERIFIED here.
     if (userType === userTypeConstants.Seller && sellerType === SELLER_TYPES.BUSINESS_STORE) {
+        // Both were already existence/active-checked in authController.register
+        // before authService.register was ever called (same pattern as the
+        // termsCondtions/privacyPolicy consent checks there) — re-fetching the
+        // category docs here is just to denormalize their names onto
+        // `categories` for display, not a second trust boundary.
+        const categoryDocs = await storeCategoryModel.find({ _id: { $in: body.categoryIds || [] } });
         const store = await storeProfileModel.create({
             seller: userData._id,
             storeName: body.storeName,
-            businessType: body.businessType,
+            businessType: body.businessTypeId,
             location: builtLocation,
             address: body.storeAddress,
-            categories: body.categories || [],
+            addressMeta: body.addressMeta || undefined,
+            categoryIds: body.categoryIds || [],
+            categories: categoryDocs.map((c) => c.name),
             pickupAvailable: !!body.pickupAvailable,
             deliveryAvailable: !!body.deliveryAvailable,
             panNumber: body.panNumber || '',

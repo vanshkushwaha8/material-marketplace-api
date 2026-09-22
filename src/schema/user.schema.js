@@ -1,5 +1,19 @@
 const mongoose = require('mongoose');
 const { SELLER_TYPES } = require('../constants/sellerType.constants');
+
+// Same sub-schema shape as materialListing.schema.js's / storeProfile.schema.js's
+// geoPointSchema — see storeProfile.schema.js for why `default: undefined`
+// on the field (not on a nested `coordinates` leaf) matters: it's what
+// actually stops mongoose auto-instantiating an invalid `{type:'Point'}`
+// with no coordinates when no location was captured.
+const geoPointSchema = new mongoose.Schema(
+    {
+        type: { type: String, enum: ['Point'], default: 'Point' },
+        coordinates: { type: [Number], required: true }, // [lng, lat]
+    },
+    { _id: false }
+);
+
 const userSchema = new mongoose.Schema({
     userType: {
         type: String,
@@ -29,29 +43,31 @@ const userSchema = new mongoose.Schema({
     // Buyer AND Seller registration both collect this (marketplace is
     // location-driven — see materialListing.schema.js's own `location`
     // shape, mirrored here). `geo` is left unset unless real coordinates
-    // are supplied, same reasoning as materialListing.schema.js: an
-    // auto-instantiated `{type:'Point'}` with no coordinates would break
-    // the 2dsphere index.
-        // Buyer AND Seller both send this — buyers need it for delivery
+    // are supplied — see geoPointSchema above for why that has to be a
+    // real sub-schema with `default: undefined` on the field itself
+    // rather than a plain nested object (the previous inline shape here
+    // auto-instantiated an invalid `{type:'Point'}` with no coordinates
+    // on every save with no location captured; harmless on this
+    // collection only because it has no 2dsphere index, but it silently
+    // discarded the latitude/longitude a buyer/seller actually captured
+    // via "Use Current Location" since `latitude`/`longitude` were never
+    // schema fields — `geo` below is the field that's actually saved).
+    // Buyer AND Seller both send this — buyers need it for delivery
     // matching, sellers for the storefront address.
     location: {
       city: { type: String, trim: true, default: '' },
       state: { type: String, trim: true, default: '' },
       pincode: { type: String, trim: true, default: '' },
       area: { type: String, trim: true, default: '' },
-      latitude: { type: Number, default: null },
-      longitude: { type: Number, default: null },
+      geo: { type: geoPointSchema, default: undefined },
     },
-    // BUSINESS_STORE only — undefined/ignored for INDIVIDUAL sellers and Buyers.
+    // BUSINESS_STORE only — undefined/ignored for INDIVIDUAL sellers and
+    // Buyers. Kept here purely as a denormalized display name (used by
+    // review.service.js / requirement.service.js / materialListing.service.js
+    // populates) — businessType/categories/PAN/GST/pickup/delivery are
+    // NOT duplicated here anymore; storeProfile.schema.js (referenced by
+    // `seller`) is their single source of truth.
     storeName: { type: String, trim: true, default: undefined },
-    businessType: { type: String, default: undefined },
-    storeAddress: { type: String, trim: true, default: undefined },
-    categories: [{ type: String }],
-    pickupAvailable: { type: Boolean, default: undefined },
-    deliveryAvailable: { type: Boolean, default: undefined },
-    panNumber: { type: String, uppercase: true, trim: true, default: undefined },
-    gstRegistered: { type: Boolean, default: undefined },
-    gstin: { type: String, uppercase: true, trim: true, default: undefined },
     profilePicture: {
         type: String,
     },
@@ -193,6 +209,7 @@ userSchema.index(
         },
     }
 );
+userSchema.index({ 'location.geo': '2dsphere' });
 userSchema.pre("validate", function (next) {
     if (this.email) {
         this.email = this.email.trim().toLowerCase();

@@ -1,6 +1,24 @@
 const mongoose = require('mongoose');
-const { BUSINESS_TYPES, STORE_CATEGORIES, STORE_VERIFICATION_STATES } = require('../constants/storeProfile.constants');
+const { STORE_VERIFICATION_STATES } = require('../constants/storeProfile.constants');
 const deleteConstants = require('../constants/delete.constants');
+
+// Same sub-schema shape as materialListing.schema.js's geoPointSchema.
+// IMPORTANT: `coordinates` must be `required: true` *on this sub-schema*
+// and the field itself must use `default: undefined` (not inline
+// `{ type: {...}, coordinates: { default: undefined } }`) — otherwise
+// mongoose auto-instantiates `{ type: 'Point' }` with no coordinates
+// on every save with no location captured, which is invalid GeoJSON and
+// makes MongoDB reject the write against the 2dsphere index below. This
+// was happening here and in user.schema.js/auth.service.js's location
+// builder before this fix, and is the actual reason registration failed
+// for anyone who didn't grant "Use Current Location".
+const geoPointSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['Point'], default: 'Point' },
+    coordinates: { type: [Number], required: true }, // [lng, lat]
+  },
+  { _id: false }
+);
 
 // One per BUSINESS_STORE seller — created at registration
 // (auth.service.js#register) when sellerType === BUSINESS_STORE, and
@@ -9,7 +27,14 @@ const storeProfileSchema = new mongoose.Schema(
   {
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'users', required: true, unique: true, index: true },
     storeName: { type: String, required: true, trim: true },
-    businessType: { type: String, enum: Object.values(BUSINESS_TYPES), required: true },
+
+    // Admin-managed collections (see businessType.model.js /
+    // storeCategory.model.js) — the frontend fetches the active list and
+    // submits IDs, never free-typed values. See auth.service.js /
+    // storeProfile.service.js for the exists+active check performed
+    // before these are ever written.
+    businessType: { type: mongoose.Schema.Types.ObjectId, ref: 'business_types', required: true },
+    categoryIds: { type: [mongoose.Schema.Types.ObjectId], ref: 'store_categories', default: [] },
 
     // Same location shape as materialListing.schema.js's `location`
     // subdoc (city/state/pincode/area + optional geo point) — reused
@@ -20,14 +45,23 @@ const storeProfileSchema = new mongoose.Schema(
       state: { type: String, trim: true, required: true },
       pincode: { type: String, trim: true, default: '' },
       area: { type: String, trim: true, default: '' },
-      geo: {
-        type: { type: String, enum: ['Point'], default: 'Point' },
-        coordinates: { type: [Number], default: undefined },
-      },
+      geo: { type: geoPointSchema, default: undefined },
     },
     address: { type: String, trim: true, required: true }, // full street address line
 
-    categories: { type: [String], enum: Object.values(STORE_CATEGORIES), default: [] },
+    // Structured fields captured from the address-autocomplete
+    // suggestion the seller picked (see auth.validation.js's
+    // `addressMeta`) — optional, since a provider may not return every
+    // field, and never trusted as the sole source for `location` above
+    // (city/state there are still the values the seller explicitly
+    // selected in the State/City dropdowns).
+    addressMeta: {
+      formattedAddress: { type: String, trim: true, default: '' },
+      postalCode: { type: String, trim: true, default: '' },
+      country: { type: String, trim: true, default: 'India' },
+    },
+
+    categories: { type: [String], default: [] }, // denormalized category names, kept in sync for display — see storeProfile.service.js
     pickupAvailable: { type: Boolean, default: false },
     deliveryAvailable: { type: Boolean, default: false },
 
