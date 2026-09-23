@@ -382,11 +382,11 @@ async function attachStoreProfile(listing) {
   if (listing?.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) return listing;
   const store = await storeProfileModel
     .findOne({ seller: listing.seller._id, is_deleted: deleteConstants.NOT_DELETED })
-    .select('storeName verificationStatus')
+    .select('storeName verificationStatus gstRegistered')
     .lean();
   if (store) {
     if (listing.toObject) listing = listing.toObject();
-    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus };
+    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered };
   }
   return listing;
 }
@@ -423,7 +423,26 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   if (!isOwner && !viewerIsAdmin) {
     materialListingModel.updateOne({ _id: listing._id }, { $inc: { viewCount: 1 } }).catch(() => {});
   }
-  return attachStoreProfile(listing);
+
+  // Real "N products" count for the detail page's "Sold By" card — same
+  // LIVE + not-deleted scoping the public search endpoint itself uses,
+  // just narrowed to this one seller. Only computed here (single listing),
+  // never per-card in search results, so it doesn't add an extra query per
+  // row on the browse page.
+  const sellerProductsCount = await materialListingModel.countDocuments({
+    seller: listing.seller._id,
+    status: LISTING_STATES.LIVE,
+    is_deleted: deleteConstants.NOT_DELETED,
+  });
+
+  const withStoreProfile = await attachStoreProfile(listing);
+  if (withStoreProfile.toObject) {
+    const plain = withStoreProfile.toObject();
+    plain.sellerProductsCount = sellerProductsCount;
+    return plain;
+  }
+  withStoreProfile.sellerProductsCount = sellerProductsCount;
+  return withStoreProfile;
 }
 
 async function search(filters) {
