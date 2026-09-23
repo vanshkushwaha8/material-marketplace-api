@@ -27,6 +27,8 @@ const storeProfileSchema = new mongoose.Schema(
   {
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'users', required: true, unique: true, index: true },
     storeName: { type: String, required: true, trim: true },
+    profileImage: { type: String, trim: true, default: '' },
+    bannerImage: { type: String, trim: true, default: '' },
 
     // Admin-managed collections (see businessType.model.js /
     // storeCategory.model.js) — the frontend fetches the active list and
