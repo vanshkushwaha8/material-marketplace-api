@@ -11,6 +11,7 @@ const auditLogConstants = require('../../constants/auditLogConstants');
 const fs = require('fs/promises');
 const path = require('path');
 const materialListingService = require('./materialListing.service');
+const materialListingModel = require('../../model/materialListing.model');
 
 class StoreProfileError extends Error {
   constructor(message, statusCode = 400) { super(message); this.name = 'StoreProfileError'; this.statusCode = statusCode; }
@@ -113,11 +114,24 @@ async function updateMyStoreProfile({ sellerId, body, req }) {
   if (body.panNumber !== undefined) store.panNumber = body.panNumber;
   if (body.gstRegistered !== undefined) store.gstRegistered = body.gstRegistered;
   if (body.gstin !== undefined) store.gstin = body.gstRegistered ? body.gstin : '';
-  if (body.location) store.location = buildLocation(body.location);
+  let updatedLocation = null;
+  if (body.location) {
+    updatedLocation = buildLocation(body.location);
+    store.location = updatedLocation;
+  }
 
   store.history.push({ action: 'UPDATED' });
   await store.save();
   await Promise.all(replacedFiles.map(removeStoredMedia));
+  // Business/Store listings mirror the store's location (see
+  // materialListing.service.js#createListing), so a changed store
+  // location has to reach the listings buyers actually filter on.
+  if (updatedLocation) {
+    await materialListingModel.updateMany(
+      { seller: sellerId, is_deleted: deleteConstants.NOT_DELETED },
+      { $set: { location: updatedLocation } }
+    );
+  }
   await createAuditLog({ req, userId: sellerId, action: auditLogConstants.STORE_PROFILE_UPDATED, entity: 'store_profiles', entityId: store._id });
   return store;
 }

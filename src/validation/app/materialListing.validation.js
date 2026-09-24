@@ -39,7 +39,7 @@ class materialListingValidation {
         area: Joi.string().trim().allow(''),
         latitude: Joi.number().min(-90).max(90).allow(null),
         longitude: Joi.number().min(-180).max(180).allow(null),
-      }).required(),
+      }).optional(),
       images: Joi.array().items(Joi.string()).max(12).default([]).optional(), // temp-upload filenames
       invoiceProof: Joi.string().allow(null, ''),
     });
