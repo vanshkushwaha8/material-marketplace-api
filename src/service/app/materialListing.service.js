@@ -74,7 +74,7 @@ class MaterialListingError extends Error {
 }
 
 const MEDIA_FOLDER = 'materialListingMedia';
-
+const storeMediaUrl = (filename) => (filename ? `/images/${filename}` : '');
 /**
  * Moves already-uploaded temp files (see upload.route.js — the same
  * two-phase temp-upload pipeline every other module in this codebase
@@ -423,10 +423,10 @@ async function attachStoreProfile(listing) {
   const store = await (storeProfileId
     ? storeProfileModel.findOne({ _id: storeProfileId, is_deleted: deleteConstants.NOT_DELETED })
     : storeProfileModel.findOne({ seller: listing.seller._id, is_deleted: deleteConstants.NOT_DELETED })
-  ).select('storeName verificationStatus gstRegistered').lean();
+  ).select('storeName verificationStatus gstRegistered profileImage').lean();
   if (store) {
     if (listing.toObject) listing = listing.toObject();
-    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered };
+    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered, profileImageUrl: storeMediaUrl(store.profileImage) };
   }
   return listing;
 }
@@ -442,10 +442,10 @@ async function attachStoreProfiles(listings) {
 
   const [byId, bySeller] = await Promise.all([
     storeProfileIds.length
-      ? storeProfileModel.find({ _id: { $in: storeProfileIds }, is_deleted: deleteConstants.NOT_DELETED }).select('seller storeName verificationStatus').lean()
+      ? storeProfileModel.find({ _id: { $in: storeProfileIds }, is_deleted: deleteConstants.NOT_DELETED }).select('seller storeName verificationStatus profileImage').lean()
       : [],
     legacySellerIds.length
-      ? storeProfileModel.find({ seller: { $in: legacySellerIds }, is_deleted: deleteConstants.NOT_DELETED }).select('seller storeName verificationStatus').lean()
+      ? storeProfileModel.find({ seller: { $in: legacySellerIds }, is_deleted: deleteConstants.NOT_DELETED }).select('seller storeName verificationStatus profileImage').lean()
       : [],
   ]);
   const storeById = new Map(byId.map((s) => [String(s._id), s]));
@@ -454,7 +454,7 @@ async function attachStoreProfiles(listings) {
   return listings.map((l) => {
     if (l.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) return l;
     const store = l.storeProfile ? storeById.get(String(l.storeProfile)) : storeBySellerId.get(String(l.seller._id));
-    return store ? { ...l, storeProfile: { storeName: store.storeName, verificationStatus: store.verificationStatus } } : l;
+    return store ? { ...l, storeProfile: { storeName: store.storeName, verificationStatus: store.verificationStatus, profileImageUrl: storeMediaUrl(store.profileImage) } } : l;
   });
 }
 
@@ -610,6 +610,7 @@ async function myListings({ sellerId, page = 1, limit = 20, status }) {
 
 module.exports = {
   MaterialListingError,
+  MEDIA_FOLDER,
   resolveSupplyType,
   finalizeSingleMedia,
   createListing,
