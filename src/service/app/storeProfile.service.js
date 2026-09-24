@@ -3,10 +3,13 @@ const storeProfileModel = require('../../model/storeProfile.model');
 const userModel = require('../../model/user.model');
 const businessTypeModel = require('../../model/businessType.model');
 const storeCategoryModel = require('../../model/storeCategory.model');
+const materialCategoryModel = require('../../model/materialCategory.model');
 const deleteConstants = require('../../constants/delete.constants');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
+const fs = require('fs/promises');
+const path = require('path');
 const materialListingService = require('./materialListing.service');
 
 class StoreProfileError extends Error {
@@ -18,6 +21,18 @@ class StoreProfileError extends Error {
 // through resolveImageUrl exactly like a listing image's `url`.
 function mediaUrl(filename) {
   return filename ? `/images/${filename}` : '';
+}
+
+// Best-effort: a replaced/removed image's file is deleted from the same
+// permanent folder finalizeMediaFiles() moves it into. ENOENT is expected
+// for images saved before files were moved (they never left temp), and a
+// failed delete must never fail the profile update itself.
+async function removeStoredMedia(filename) {
+  try {
+    await fs.unlink(path.join(__dirname, '../../../public', materialListingService.MEDIA_FOLDER, path.basename(filename)));
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('Could not delete replaced store image:', filename, err.message);
+  }
 }
 
 function buildLocation(location) {
@@ -75,9 +90,11 @@ async function updateMyStoreProfile({ sellerId, body, req }) {
   // drops the file in temp storage, so a newly-picked filename must be
   // moved to permanent storage before it's saved. An unchanged filename
   // was already moved on an earlier save, so it's skipped, not moved twice.
+  const replacedFiles = [];
   for (const field of ['profileImage', 'bannerImage']) {
     if (body[field] === undefined || body[field] === store[field]) continue;
     if (body[field]) await materialListingService.finalizeSingleMedia(body[field]);
+    if (store[field]) replacedFiles.push(store[field]);
     store[field] = body[field];
   }
   if (body.businessTypeId !== undefined) {
@@ -100,6 +117,7 @@ async function updateMyStoreProfile({ sellerId, body, req }) {
 
   store.history.push({ action: 'UPDATED' });
   await store.save();
+  await Promise.all(replacedFiles.map(removeStoredMedia));
   await createAuditLog({ req, userId: sellerId, action: auditLogConstants.STORE_PROFILE_UPDATED, entity: 'store_profiles', entityId: store._id });
   return store;
 }
