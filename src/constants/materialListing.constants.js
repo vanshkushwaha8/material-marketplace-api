@@ -50,6 +50,15 @@ const SUPPLY_TYPES = Object.freeze({
 // to NEW_STOCK server-side (materialListing.service.js#createListing).
 const INDIVIDUAL_SUPPLY_TYPES = [SUPPLY_TYPES.SURPLUS, SUPPLY_TYPES.NEW_UNUSED];
 
+// Business/Store sellers may only list from this subset of CONDITION_TYPES
+// (new or unused stock — never surplus/excess/cancellation/used, which
+// only make sense as an individual's project leftovers). Enforced by
+// validation/app/materialListing.validation.js#businessStoreFields, run
+// from materialListing.service.js on both create and update — same
+// "keep the allowed subset centralized in constants" convention as
+// INDIVIDUAL_SUPPLY_TYPES above.
+const BUSINESS_STORE_CONDITION_TYPES = [CONDITION_TYPES.NEW_SURPLUS, CONDITION_TYPES.UNUSED_INVENTORY];
+
 // Every category MUST map to one of these validators in
 // materialSpecs.validation.js — see that file's SPEC_VALIDATORS map.
 // Keeping the list here (rather than only in validation) is what lets
@@ -80,6 +89,7 @@ module.exports = {
   CONDITION_TYPES,
   SUPPLY_TYPES,
   INDIVIDUAL_SUPPLY_TYPES,
+  BUSINESS_STORE_CONDITION_TYPES,
   CATEGORY_SLUGS,
   MAX_LISTING_IMAGES,
   MAX_LISTING_VIDEOS,

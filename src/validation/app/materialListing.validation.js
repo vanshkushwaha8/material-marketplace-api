@@ -1,5 +1,5 @@
 const Joi = require("joi");
-const { CONDITION_TYPES, SUPPLY_TYPES } = require('../../constants/materialListing.constants');
+const { CONDITION_TYPES, SUPPLY_TYPES, BUSINESS_STORE_CONDITION_TYPES } = require('../../constants/materialListing.constants');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { MATERIAL_UNITS } = require('../../constants/materialUnit.constants');
 
@@ -49,6 +49,40 @@ class materialListingValidation {
     return this.create().fork(
       ['title', 'category', 'condition', 'quantity', 'unit', 'price', 'location'],
       (schema) => schema.optional()
+    );
+  }
+
+  // Business/Store-only field constraints — condition restricted to new/
+  // unused stock, and (when the caller has resolved the seller's
+  // registered store categories) category restricted to that set. Both
+  // depend on DB-fetched context (StoreProfile, the category's slug) that
+  // isn't available at the static create()/update() gate the controller
+  // calls, so — same pattern as materialSpecs.validation.js's
+  // validateSpecifications() — this schema is built and run from
+  // materialListing.service.js once it has that context, for both
+  // createListing and updateListing. Never applied to INDIVIDUAL sellers.
+  static businessStore({ allowedCategorySlugs } = {}) {
+    return Joi.object({
+      condition: Joi.string()
+        .valid(...BUSINESS_STORE_CONDITION_TYPES)
+        .required()
+        .messages({ 'any.only': 'Business/Store sellers can only list new or unused inventory conditions' }),
+      // Only constrained to a fixed set when the service passes the
+      // store's registered category slugs (a brand-new StoreProfile with
+      // no categories set yet imposes no restriction, mirroring the
+      // service's original `sellerSlugs.length &&` guard).
+      categorySlug: Array.isArray(allowedCategorySlugs) && allowedCategorySlugs.length
+        ? Joi.string().valid(...allowedCategorySlugs).required().messages({
+            'any.only': 'This category is not registered for your store — update your store categories to list it',
+          })
+        : Joi.string().allow('', null).optional(),
+    }).unknown(true);
+  }
+
+  static ValidateBusinessStoreFields({ condition, categorySlug, allowedCategorySlugs }) {
+    return this.businessStore({ allowedCategorySlugs }).validate(
+      { condition, categorySlug },
+      { abortEarly: false }
     );
   }
 

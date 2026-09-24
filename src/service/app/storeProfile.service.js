@@ -13,6 +13,13 @@ class StoreProfileError extends Error {
   constructor(message, statusCode = 400) { super(message); this.name = 'StoreProfileError'; this.statusCode = statusCode; }
 }
 
+// Same URL shape finalizeMediaFiles() in materialListing.service.js stores
+// on a listing image (`/images/<filename>`) — the client passes it
+// through resolveImageUrl exactly like a listing image's `url`.
+function mediaUrl(filename) {
+  return filename ? `/images/${filename}` : '';
+}
+
 function buildLocation(location) {
   const built = {
     city: location.city,
@@ -55,7 +62,7 @@ async function getMyStoreProfile(sellerId) {
   await assertBusinessSeller(sellerId);
   const store = await storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED });
   if (!store) throw new StoreProfileError('Store profile not found', 404);
-  return store;
+  return { ...store.toObject(), profileImageUrl: mediaUrl(store.profileImage), bannerImageUrl: mediaUrl(store.bannerImage) };
 }
 
 async function updateMyStoreProfile({ sellerId, body, req }) {
@@ -64,6 +71,15 @@ async function updateMyStoreProfile({ sellerId, body, req }) {
   if (!store) throw new StoreProfileError('Store profile not found', 404);
 
   if (body.storeName !== undefined) store.storeName = body.storeName;
+  // Same two-phase pipeline as listing photos: the upload endpoint only
+  // drops the file in temp storage, so a newly-picked filename must be
+  // moved to permanent storage before it's saved. An unchanged filename
+  // was already moved on an earlier save, so it's skipped, not moved twice.
+  for (const field of ['profileImage', 'bannerImage']) {
+    if (body[field] === undefined || body[field] === store[field]) continue;
+    if (body[field]) await materialListingService.finalizeSingleMedia(body[field]);
+    store[field] = body[field];
+  }
   if (body.businessTypeId !== undefined) {
     await assertBusinessTypeActive(body.businessTypeId);
     store.businessType = body.businessTypeId;
@@ -103,6 +119,8 @@ async function getPublicStoreProfile(sellerId) {
   return {
     sellerId: store.seller._id,
     storeName: store.storeName,
+    profileImageUrl: mediaUrl(store.profileImage),
+    bannerImageUrl: mediaUrl(store.bannerImage),
     businessType: store.businessType ? { _id: store.businessType._id, name: store.businessType.name } : null,
     location: { city: store.location.city, state: store.location.state },
     categories: store.categories,
@@ -113,14 +131,30 @@ async function getPublicStoreProfile(sellerId) {
   };
 }
 
-async function getStoreProducts({ sellerId, page, limit }) {
+async function getStoreProducts({ sellerId, page, limit, category }) {
   if (!mongoose.Types.ObjectId.isValid(sellerId)) throw new StoreProfileError('Invalid store id', 404);
   const seller = await userModel.findById(sellerId).select('sellerType');
   if (!seller || seller.sellerType !== SELLER_TYPES.BUSINESS_STORE) throw new StoreProfileError('Store not found', 404);
   // materialListing.service.js#search already restricts to buyer-visible
   // statuses and attaches storeProfile info — reused rather than
   // duplicating the query here.
-  return materialListingService.search({ sellerId, page, limit });
+  // The store page's chips are store category NAMES, but a listing stores
+  // a material-category ObjectId. The two collections are linked by slug
+  // (createListing's allowedCategorySlugs check relies on the same link),
+  // so resolve name -> slug -> material category id.
+  let materialCategoryId;
+  if (category) {
+    if (typeof category !== 'string') throw new StoreProfileError('Invalid category', 400);
+    const storeCategory = await storeCategoryModel.findOne({ name: category, is_deleted: deleteConstants.NOT_DELETED }).select('slug');
+    const materialCategory = storeCategory
+      ? await materialCategoryModel.findOne({ slug: storeCategory.slug, is_deleted: deleteConstants.NOT_DELETED }).select('_id')
+      : null;
+    if (!materialCategory) {
+      return { getData: [], count: 0, page: Math.max(1, Number(page) || 1), limit: Math.min(100, Number(limit) || 20) };
+    }
+    materialCategoryId = materialCategory._id;
+  }
+  return materialListingService.search({ sellerId, page, limit, category: materialCategoryId });
 }
 
 module.exports = {

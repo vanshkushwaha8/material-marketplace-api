@@ -39,7 +39,7 @@ class StoreProfileController {
 
   getProducts = async (request, response, nextFunction) => {
     try {
-      const result = await storeProfileService.getStoreProducts({ sellerId: request.params.sellerId, page: request.query.page, limit: request.query.limit });
+      const result = await storeProfileService.getStoreProducts({ sellerId: request.params.sellerId, page: request.query.page, limit: request.query.limit, category: request.query.category });
       return responseConstants.success(response, 'Store products fetched', result, statusCodes.OK);
     } catch (error) {
       if (error instanceof storeProfileService.StoreProfileError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
