@@ -11,6 +11,7 @@ class materialCategoryValidation {
       slug: Joi.string().trim().lowercase().pattern(/^[a-z0-9-]+$/).required(),
       parentCategory: objectId().allow(null, ''),
       description: Joi.string().trim().max(500).allow(''),
+      logo: Joi.string().trim().max(500).allow('').optional(),
       specFields: Joi.array().items(Joi.object({
         key: Joi.string().trim().pattern(/^[a-zA-Z][a-zA-Z0-9_]*$/).required()
           .messages({ 'string.pattern.base': 'Key must start with a letter and contain only letters, numbers, underscores' }),

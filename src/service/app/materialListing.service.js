@@ -162,6 +162,22 @@ function buildLocation(body) {
   return location;
 }
   
+// Business/Store listings carry no location of their own — they mirror
+// the store profile's, so the seller enters it once (Store Profile page).
+function locationFromStore(storeProfile) {
+  const src = storeProfile.location;
+  const location = {
+    city: src.city,
+    state: src.state,
+    pincode: src.pincode || '',
+    area: src.area || '',
+  };
+  if (src.geo?.coordinates?.length === 2) {
+    location.geo = { type: 'Point', coordinates: [...src.geo.coordinates] };
+  }
+  return location;
+}
+
 async function createListing({ sellerId, body, req }) {
   if ((body.images || []).length > MAX_LISTING_IMAGES) {
     throw new MaterialListingError(`A listing may have at most ${MAX_LISTING_IMAGES} images`);
@@ -178,6 +194,7 @@ async function createListing({ sellerId, body, req }) {
 
       const seller = await userModel.findById(sellerId).select('sellerType');
   let storeProfileId = null;
+  let listingLocation = null;
   if (seller?.sellerType === SELLER_TYPES.BUSINESS_STORE) {
     
     const [category, storeProfile] = await Promise.all([
@@ -188,6 +205,7 @@ async function createListing({ sellerId, body, req }) {
       throw new MaterialListingError('Complete your store profile before creating a product listing', 400);
     }
     storeProfileId = storeProfile._id;
+    listingLocation = locationFromStore(storeProfile);
     const allowedCategorySlugs = (storeProfile.categoryIds || []).map((c) => c.slug);
     const { error: businessError } = materialListingValidation.ValidateBusinessStoreFields({
       condition: body.condition,
@@ -197,6 +215,16 @@ async function createListing({ sellerId, body, req }) {
     if (businessError) {
       throw new MaterialListingError(businessError.details.map((d) => d.message).join('; '), 400);
     }
+  }
+
+  if (!listingLocation) {
+    if (!body.location) throw new MaterialListingError('Location is required', 400);
+    listingLocation = buildLocation(body);
+  }
+
+  if (!listingLocation) {
+    if (!body.location) throw new MaterialListingError('Location is required', 400);
+    listingLocation = buildLocation(body);
   }
 
   const supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
@@ -227,7 +255,7 @@ async function createListing({ sellerId, body, req }) {
     specifications,
     manufacturingDate: body.manufacturingDate || null,
     purchaseDate: body.purchaseDate || null,
-    location: buildLocation(body),
+    location: listingLocation,
     images,
     videos,
     invoiceProof,
@@ -341,7 +369,14 @@ async function updateListing({ sellerId, listingId, body, req }) {
     listing.availableQuantity = body.quantity - committed;
     listing.quantity = body.quantity;
   }
-  if (body.location) listing.location = buildLocation(body);
+  // Business/Store listings always mirror the store's location — a
+  // client-sent one is ignored (this also re-syncs older listings).
+  if (isBusinessStore) {
+    const storeForLocation = storeProfile || await storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED });
+    if (storeForLocation) listing.location = locationFromStore(storeForLocation);
+  } else if (body.location) {
+    listing.location = buildLocation(body);
+  }
 
   if (body.images) listing.images = await finalizeMediaFiles(body.images);
   if (body.videos) listing.videos = await finalizeMediaFiles(body.videos);
@@ -462,7 +497,7 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   if (!mongoose.Types.ObjectId.isValid(listingId)) throw new MaterialListingError('Invalid listing id', 404);
   const listing = await materialListingModel
     .findOne({ _id: listingId, is_deleted: deleteConstants.NOT_DELETED })
-    .populate('category', 'name slug')
+    .populate('category', 'name slug logo')
     .populate('subcategory', 'name slug')
     .populate('seller', 'fullName email createdAt sellerType');
   if (!listing) throw new MaterialListingError('Listing not found', 404);
@@ -486,13 +521,15 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
     is_deleted: deleteConstants.NOT_DELETED,
   });
 
-  const withStoreProfile = await attachStoreProfile(listing);
-  if (withStoreProfile.toObject) {
-    const plain = withStoreProfile.toObject();
-    plain.sellerProductsCount = sellerProductsCount;
-    return plain;
-  }
-  withStoreProfile.sellerProductsCount = sellerProductsCount;
+ const withStoreProfile = await attachStoreProfile(listing);
+if (withStoreProfile.toObject) {
+  const plain = withStoreProfile.toObject();
+  plain.sellerProductsCount = sellerProductsCount;
+  if (plain.category) plain.category.logoUrl = storeMediaUrl(plain.category.logo);
+  return plain;
+}
+withStoreProfile.sellerProductsCount = sellerProductsCount;
+if (withStoreProfile.category) withStoreProfile.category.logoUrl = storeMediaUrl(withStoreProfile.category.logo);
   return withStoreProfile;
 }
 
