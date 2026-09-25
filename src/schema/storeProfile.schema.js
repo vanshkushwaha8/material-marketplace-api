@@ -31,12 +31,15 @@ const storeProfileSchema = new mongoose.Schema(
     bannerImage: { type: String, trim: true, default: '' },
 
     // Admin-managed collections (see businessType.model.js /
-    // storeCategory.model.js) — the frontend fetches the active list and
-    // submits IDs, never free-typed values. See auth.service.js /
+    // materialCategory.model.js) — the frontend fetches the active list
+    // and submits IDs, never free-typed values. See auth.service.js /
     // storeProfile.service.js for the exists+active check performed
-    // before these are ever written.
+    // before these are ever written. categoryIds points at the same
+    // material_categories collection listings use (top-level categories
+    // only — see assertStoreCategoriesActive) rather than a separate
+    // store-category taxonomy that meant the same thing twice.
     businessType: { type: mongoose.Schema.Types.ObjectId, ref: 'business_types', required: true },
-    categoryIds: { type: [mongoose.Schema.Types.ObjectId], ref: 'store_categories', default: [] },
+    categoryIds: { type: [mongoose.Schema.Types.ObjectId], ref: 'material_categories', default: [] },
 
     // Same location shape as materialListing.schema.js's `location`
     // subdoc (city/state/pincode/area + optional geo point) — reused

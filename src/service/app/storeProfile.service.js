@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const storeProfileModel = require('../../model/storeProfile.model');
 const userModel = require('../../model/user.model');
 const businessTypeModel = require('../../model/businessType.model');
-const storeCategoryModel = require('../../model/storeCategory.model');
 const materialCategoryModel = require('../../model/materialCategory.model');
 const deleteConstants = require('../../constants/delete.constants');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
@@ -59,9 +58,9 @@ async function assertBusinessTypeActive(businessTypeId) {
 }
 
 async function assertStoreCategoriesActive(categoryIds = []) {
-  const categories = await storeCategoryModel.find({ _id: { $in: categoryIds }, status: 'active', is_deleted: deleteConstants.NOT_DELETED });
+  const categories = await materialCategoryModel.find({ _id: { $in: categoryIds }, parentCategory: null, status: 'active', is_deleted: deleteConstants.NOT_DELETED });
   if (categories.length !== categoryIds.length) {
-    throw new StoreProfileError('One or more selected store categories were not found or are no longer active', 404);
+    throw new StoreProfileError('One or more selected categories were not found or are no longer active', 404);
   }
   return categories;
 }
@@ -174,13 +173,10 @@ async function getStoreProducts({ sellerId, page, limit, category }) {
   // a material-category ObjectId. The two collections are linked by slug
   // (createListing's allowedCategorySlugs check relies on the same link),
   // so resolve name -> slug -> material category id.
-  let materialCategoryId;
+ let materialCategoryId;
   if (category) {
     if (typeof category !== 'string') throw new StoreProfileError('Invalid category', 400);
-    const storeCategory = await storeCategoryModel.findOne({ name: category, is_deleted: deleteConstants.NOT_DELETED }).select('slug');
-    const materialCategory = storeCategory
-      ? await materialCategoryModel.findOne({ slug: storeCategory.slug, is_deleted: deleteConstants.NOT_DELETED }).select('_id')
-      : null;
+    const materialCategory = await materialCategoryModel.findOne({ name: category, is_deleted: deleteConstants.NOT_DELETED }).select('_id');
     if (!materialCategory) {
       return { getData: [], count: 0, page: Math.max(1, Number(page) || 1), limit: Math.min(100, Number(limit) || 20) };
     }
