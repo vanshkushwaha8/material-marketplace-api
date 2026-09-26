@@ -7,8 +7,6 @@ class storeProfileValidation {
       storeName: Joi.string().trim().min(2).max(150).optional(),
       profileImage: Joi.string().trim().max(500).allow('').optional(),
       bannerImage: Joi.string().trim().max(500).allow('').optional(),
-      // Admin-managed collections — IDs only. Existence + active state
-      // checked in storeProfile.service.js before anything is written.
       businessTypeId: Joi.string().pattern(/^[a-fA-F0-9]{24}$/).optional()
         .messages({ 'string.pattern.base': 'Invalid business type' }),
       location: Joi.object({
