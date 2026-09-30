@@ -43,10 +43,16 @@ function haversineKm([lng1, lat1], [lng2, lat2]) {
 // separately and stitches the requested page/limit window across the
 // two, so pagination stays exact even when a page straddles the
 // boundary between "still in stock" and "sold out".
-async function fetchStatusOrderedPage({ baseQuery, populate, sort, skip, limit }) {
+async function fetchStatusOrderedPage({ baseQuery, countQuery = baseQuery, populate, sort, skip, limit }) {
   const liveQuery = { ...baseQuery, status: LISTING_STATES.LIVE };
   const soldOutQuery = { ...baseQuery, status: LISTING_STATES.SOLD_OUT };
-  const liveCount = await materialListingModel.countDocuments(liveQuery);
+  // MongoDB's countDocuments() uses an aggregation internally, where $near
+  // is unsupported. Proximity result queries keep $near for nearest-first
+  // ordering, while their counts use the equivalent radius-only predicate.
+  const liveCount = await materialListingModel.countDocuments({
+    ...countQuery,
+    status: LISTING_STATES.LIVE,
+  });
 
   const runQuery = (q, qSkip, qLimit) => {
     let builder = materialListingModel.find(q).select('-stateHistory');
@@ -594,16 +600,26 @@ async function search(filters) {
         $maxDistance: Number(radiusKm) * 1000,
       },
     };
+    const countQuery = { ...query };
+    delete countQuery.status;
+    countQuery['location.geo'] = {
+      $geoWithin: {
+        $centerSphere: [
+          [Number(lng), Number(lat)],
+          (Number(radiusKm) * 1000) / 6378100,
+        ],
+      },
+    };
     const [rawData, count] = await Promise.all([
       // $near already returns each bucket nearest-first, so no explicit
       // sort is passed — fetchStatusOrderedPage only reorders LIVE vs
       // SOLD_OUT, not the proximity ordering within either bucket.
-      fetchStatusOrderedPage({ baseQuery, populate, sort: undefined, skip, limit: pageLimit }),
+      fetchStatusOrderedPage({ baseQuery, countQuery, populate, sort: undefined, skip, limit: pageLimit }),
       // Count must include the same $near radius filter baseQuery carries
       // (status re-added as the combined LIVE/SOLD_OUT set, same as the
       // unfiltered `query` above) — otherwise "N results" would count
       // listings outside the search radius.
-      materialListingModel.countDocuments({ ...baseQuery, status: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT] }),
+      materialListingModel.countDocuments({ ...countQuery, status: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT] }),
     ]);
     // Real backend-computed "N km away" (spec section 13) from the same
     // coordinates $near just queried with — not a second geo lookup, just
