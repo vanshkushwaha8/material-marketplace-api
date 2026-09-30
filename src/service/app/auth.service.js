@@ -27,7 +27,7 @@ const twofaService = require('./twofa.service');
 const activitySessionHelper = require('../../helper/activitySession.helper');
 const storeProfileModel = require('../../model/storeProfile.model');
 const businessTypeModel = require('../../model/businessType.model');
-const storeCategoryModel = require('../../model/storeCategory.model');
+const materialCategoryModel = require('../../model/materialCategory.model');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { STORE_VERIFICATION_STATES } = require('../../constants/storeProfile.constants');
 
@@ -53,9 +53,9 @@ async function assertBusinessTypeActive(businessTypeId) {
 }
 
 async function assertStoreCategoriesActive(categoryIds = []) {
-    const categories = await storeCategoryModel.find({ _id: { $in: categoryIds }, status: 'active', is_deleted: deleteConstants.NOT_DELETED });
+    const categories = await materialCategoryModel.find({ _id: { $in: categoryIds }, parentCategory: null, status: 'active', is_deleted: deleteConstants.NOT_DELETED });
     if (categories.length !== categoryIds.length) {
-        throw new RegisterError('One or more selected store categories were not found or are no longer active', 404);
+        throw new RegisterError('One or more selected categories were not found or are no longer active', 404);
     }
     return categories;
 }
@@ -115,7 +115,7 @@ authService.register = async (request) => {
         // termsCondtions/privacyPolicy consent checks there) — re-fetching the
         // category docs here is just to denormalize their names onto
         // `categories` for display, not a second trust boundary.
-        const categoryDocs = await storeCategoryModel.find({ _id: { $in: body.categoryIds || [] } });
+        const categoryDocs = await materialCategoryModel.find({ _id: { $in: body.categoryIds || [] } });
         const store = await storeProfileModel.create({
             seller: userData._id,
             storeName: body.storeName,

@@ -5,10 +5,11 @@ const offerModel = require('../../model/offer.model');
 const userModel = require('../../model/user.model');
 const storeProfileModel = require('../../model/storeProfile.model');
 const deleteConstants = require('../../constants/delete.constants');
-const { LISTING_STATES, VERIFICATION_STATES, BUYER_VISIBLE_STATES, MAX_LISTING_IMAGES, MAX_LISTING_VIDEOS, SUPPLY_TYPES, INDIVIDUAL_SUPPLY_TYPES, CONDITION_TYPES } = require('../../constants/materialListing.constants');
+const { LISTING_STATES, VERIFICATION_STATES, BUYER_VISIBLE_STATES, MAX_LISTING_IMAGES, MAX_LISTING_VIDEOS, SUPPLY_TYPES, INDIVIDUAL_SUPPLY_TYPES } = require('../../constants/materialListing.constants');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { OFFER_TERMINAL_STATES } = require('../../constants/offer.constants');
 const { validateSpecifications,mergeSpecFieldDefs  } = require('../../validation/app/materialSpecs.validation');
+const materialListingValidation = require('../../validation/app/materialListing.validation');
 const helper = require('../../helper/helper');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
@@ -42,10 +43,16 @@ function haversineKm([lng1, lat1], [lng2, lat2]) {
 // separately and stitches the requested page/limit window across the
 // two, so pagination stays exact even when a page straddles the
 // boundary between "still in stock" and "sold out".
-async function fetchStatusOrderedPage({ baseQuery, populate, sort, skip, limit }) {
+async function fetchStatusOrderedPage({ baseQuery, countQuery = baseQuery, populate, sort, skip, limit }) {
   const liveQuery = { ...baseQuery, status: LISTING_STATES.LIVE };
   const soldOutQuery = { ...baseQuery, status: LISTING_STATES.SOLD_OUT };
-  const liveCount = await materialListingModel.countDocuments(liveQuery);
+  // MongoDB's countDocuments() uses an aggregation internally, where $near
+  // is unsupported. Proximity result queries keep $near for nearest-first
+  // ordering, while their counts use the equivalent radius-only predicate.
+  const liveCount = await materialListingModel.countDocuments({
+    ...countQuery,
+    status: LISTING_STATES.LIVE,
+  });
 
   const runQuery = (q, qSkip, qLimit) => {
     let builder = materialListingModel.find(q).select('-stateHistory');
@@ -73,7 +80,7 @@ class MaterialListingError extends Error {
 }
 
 const MEDIA_FOLDER = 'materialListingMedia';
-
+const storeMediaUrl = (filename) => (filename ? `/images/${filename}` : '');
 /**
  * Moves already-uploaded temp files (see upload.route.js — the same
  * two-phase temp-upload pipeline every other module in this codebase
@@ -161,6 +168,22 @@ function buildLocation(body) {
   return location;
 }
   
+// Business/Store listings carry no location of their own — they mirror
+// the store profile's, so the seller enters it once (Store Profile page).
+function locationFromStore(storeProfile) {
+  const src = storeProfile.location;
+  const location = {
+    city: src.city,
+    state: src.state,
+    pincode: src.pincode || '',
+    area: src.area || '',
+  };
+  if (src.geo?.coordinates?.length === 2) {
+    location.geo = { type: 'Point', coordinates: [...src.geo.coordinates] };
+  }
+  return location;
+}
+
 async function createListing({ sellerId, body, req }) {
   if ((body.images || []).length > MAX_LISTING_IMAGES) {
     throw new MaterialListingError(`A listing may have at most ${MAX_LISTING_IMAGES} images`);
@@ -176,32 +199,38 @@ async function createListing({ sellerId, body, req }) {
   });
 
       const seller = await userModel.findById(sellerId).select('sellerType');
-  if (seller?.sellerType === 'BUSINESS_STORE') {
-    const businessAllowedConditions = [CONDITION_TYPES.NEW_SURPLUS, CONDITION_TYPES.UNUSED_INVENTORY];
-    if (!businessAllowedConditions.includes(body.condition)) {
-      throw new MaterialListingError('Business/Store sellers can only list new or unused inventory conditions', 400);
-    }
-
-    // ASSUMPTION TO VERIFY: this assumes material_categories.slug follows
-    // the same naming convention as the store_categories admin creates
-    // (see storeCategory.model.js) lowercased-with-hyphens (e.g. a store
-    // category named "TMT Steel" -> slug "tmt-steel"). If an admin gives
-    // a store category a differently-formatted slug than the matching
-    // material_categories entry, this check will incorrectly reject
-    // everything — confirm slug values line up before relying on this
-    // in production. This was previously checked against a hardcoded
-    // STORE_CATEGORIES enum on the user doc; that enum and its
-    // duplicated copy on the user doc are gone (see user.schema.js) —
-    // the seller's declared store categories now live only on their
-    // StoreProfile (see storeProfile.schema.js's `categoryIds`).
+  let storeProfileId = null;
+  let listingLocation = null;
+  if (seller?.sellerType === SELLER_TYPES.BUSINESS_STORE) {
+    
     const [category, storeProfile] = await Promise.all([
       materialCategoryModel.findById(body.category).select('slug'),
       storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED }).populate('categoryIds', 'slug'),
     ]);
-    const sellerSlugs = (storeProfile?.categoryIds || []).map((c) => c.slug);
-    if (category && sellerSlugs.length && !sellerSlugs.includes(category.slug)) {
-      throw new MaterialListingError('This category is not registered for your store — update your store categories to list it', 400);
+    if (!storeProfile) {
+      throw new MaterialListingError('Complete your store profile before creating a product listing', 400);
     }
+    storeProfileId = storeProfile._id;
+    listingLocation = locationFromStore(storeProfile);
+    const allowedCategorySlugs = (storeProfile.categoryIds || []).map((c) => c.slug);
+    const { error: businessError } = materialListingValidation.ValidateBusinessStoreFields({
+      condition: body.condition,
+      categorySlug: category?.slug,
+      allowedCategorySlugs,
+    });
+    if (businessError) {
+      throw new MaterialListingError(businessError.details.map((d) => d.message).join('; '), 400);
+    }
+  }
+
+  if (!listingLocation) {
+    if (!body.location) throw new MaterialListingError('Location is required', 400);
+    listingLocation = buildLocation(body);
+  }
+
+  if (!listingLocation) {
+    if (!body.location) throw new MaterialListingError('Location is required', 400);
+    listingLocation = buildLocation(body);
   }
 
   const supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
@@ -214,6 +243,7 @@ async function createListing({ sellerId, body, req }) {
 
   const listing = await materialListingModel.create({
     seller: sellerId,
+    storeProfile: storeProfileId,
     title: body.title,
     description: body.description || '',
     category: category._id,
@@ -225,17 +255,13 @@ async function createListing({ sellerId, body, req }) {
     unit: body.unit,
     price: body.price,
     currency: body.currency || 'INR',
-    // Business/Store listings default to a fixed listed price rather
-    // than negotiation (spec: "do not implement negotiation as the
-    // primary business-store pricing flow") — still a seller choice, not
-    // a hard rule, so an explicit body.negotiable is respected either way.
     negotiable: body.negotiable !== undefined
       ? body.negotiable !== false
       : seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE,
     specifications,
     manufacturingDate: body.manufacturingDate || null,
     purchaseDate: body.purchaseDate || null,
-    location: buildLocation(body),
+    location: listingLocation,
     images,
     videos,
     invoiceProof,
@@ -269,25 +295,70 @@ async function updateListing({ sellerId, listingId, body, req }) {
     throw new MaterialListingError(`Cannot edit a listing that is ${listing.status}`, 409);
   }
 
+  const seller = await userModel.findById(sellerId).select('sellerType');
+  const isBusinessStore = seller?.sellerType === SELLER_TYPES.BUSINESS_STORE;
+
+  // A Business/Store seller's condition/category are as strictly gated on
+  // edit as they are on create (materialListing.service.js#createListing)
+  // — a listing that started as NEW_SURPLUS could otherwise be silently
+  // flipped to `used`, or moved to a category the store never registered,
+  // just by hitting the update endpoint. Only fetched when the edit
+  // actually touches condition or category.
+  let storeProfile = null;
+  if (isBusinessStore && (body.condition !== undefined || body.category)) {
+    storeProfile = await storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED }).populate('categoryIds', 'slug');
+    if (!storeProfile) {
+      throw new MaterialListingError('Complete your store profile before editing this listing', 400);
+    }
+  }
+
   if (body.category || body.specifications) {
     const { category, specifications } = await assertCategoryAndSpecs({
       categoryId: body.category || listing.category,
       subcategoryId: body.subcategory !== undefined ? body.subcategory : listing.subcategory,
       specifications: body.specifications !== undefined ? body.specifications : listing.specifications,
     });
+
+    if (isBusinessStore && body.category) {
+      const allowedCategorySlugs = (storeProfile.categoryIds || []).map((c) => c.slug);
+      const { error: businessError } = materialListingValidation.ValidateBusinessStoreFields({
+        condition: body.condition !== undefined ? body.condition : listing.condition,
+        categorySlug: category.slug,
+        allowedCategorySlugs,
+      });
+      if (businessError) {
+        throw new MaterialListingError(businessError.details.map((d) => d.message).join('; '), 400);
+      }
+    }
+
     listing.category = category._id;
     listing.specifications = specifications;
   }
   if (body.subcategory !== undefined) listing.subcategory = body.subcategory || null;
 
+  // condition alone (no category change) still needs the Business/Store
+  // allowed-subset check — the category branch above already covers the
+  // case where both are edited together.
+  if (isBusinessStore && body.condition !== undefined && !body.category) {
+    const { error: conditionError } = materialListingValidation.ValidateBusinessStoreFields({ condition: body.condition });
+    if (conditionError) {
+      throw new MaterialListingError(conditionError.details.map((d) => d.message).join('; '), 400);
+    }
+  }
+
   // A Business/Store seller's supplyType can never move off NEW_STOCK, so
   // there's nothing to change for them regardless of what's sent — only
   // an Individual seller can switch between SURPLUS and NEW_UNUSED here.
-  if (body.supplyType !== undefined) {
-    const seller = await userModel.findById(sellerId).select('sellerType');
-    if (seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) {
-      listing.supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
-    }
+  if (body.supplyType !== undefined && !isBusinessStore) {
+    listing.supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
+  }
+
+  // Self-heals listings created before storeProfile existed on the
+  // schema — a BUSINESS_STORE seller editing an older listing gets it
+  // linked to their store profile rather than staying orphaned.
+  if (!listing.storeProfile && isBusinessStore) {
+    const sp = storeProfile || await storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED }).select('_id');
+    if (sp) listing.storeProfile = sp._id;
   }
 
     const directFields = ['title', 'description', 'brand', 'condition', 'unit', 'price', 'currency', 'negotiable', 'manufacturingDate', 'purchaseDate'];
@@ -304,7 +375,14 @@ async function updateListing({ sellerId, listingId, body, req }) {
     listing.availableQuantity = body.quantity - committed;
     listing.quantity = body.quantity;
   }
-  if (body.location) listing.location = buildLocation(body);
+  // Business/Store listings always mirror the store's location — a
+  // client-sent one is ignored (this also re-syncs older listings).
+  if (isBusinessStore) {
+    const storeForLocation = storeProfile || await storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED });
+    if (storeForLocation) listing.location = locationFromStore(storeForLocation);
+  } else if (body.location) {
+    listing.location = buildLocation(body);
+  }
 
   if (body.images) listing.images = await finalizeMediaFiles(body.images);
   if (body.videos) listing.videos = await finalizeMediaFiles(body.videos);
@@ -375,35 +453,49 @@ async function deleteListing({ sellerId, listingId, req }) {
 }
 
 // Business/Store listings show the store's name/verification instead of
-// "Individual Seller" (spec's card/detail-page distinction) — StoreProfile
-// isn't a `ref` on materialListing (only seller id is shared between the
-// two), so this is a small explicit lookup rather than a populate.
+// "Individual Seller" (spec's card/detail-page distinction). Looked up by
+// the listing's own storeProfile FK (materialListing.schema.js) when
+// present; falls back to a seller lookup for listings created before that
+// field existed (storeProfile is unique-per-seller, so the fallback is
+// still exact, just an extra query).
 async function attachStoreProfile(listing) {
   if (listing?.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) return listing;
-  const store = await storeProfileModel
-    .findOne({ seller: listing.seller._id, is_deleted: deleteConstants.NOT_DELETED })
-    .select('storeName verificationStatus gstRegistered')
-    .lean();
+  const storeProfileId = listing.storeProfile;
+  const store = await (storeProfileId
+    ? storeProfileModel.findOne({ _id: storeProfileId, is_deleted: deleteConstants.NOT_DELETED })
+    : storeProfileModel.findOne({ seller: listing.seller._id, is_deleted: deleteConstants.NOT_DELETED })
+  ).select('storeName verificationStatus gstRegistered profileImage').lean();
   if (store) {
     if (listing.toObject) listing = listing.toObject();
-    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered };
+    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered, profileImageUrl: storeMediaUrl(store.profileImage) };
   }
   return listing;
 }
 
 async function attachStoreProfiles(listings) {
-  const businessSellerIds = [...new Set(
-    listings.filter((l) => l.seller?.sellerType === SELLER_TYPES.BUSINESS_STORE).map((l) => String(l.seller._id))
-  )];
-  if (!businessSellerIds.length) return listings;
-  const stores = await storeProfileModel
-    .find({ seller: { $in: businessSellerIds }, is_deleted: deleteConstants.NOT_DELETED })
-    .select('seller storeName verificationStatus')
-    .lean();
-  const storeBySellerId = new Map(stores.map((s) => [String(s.seller), s]));
+  const businessListings = listings.filter((l) => l.seller?.sellerType === SELLER_TYPES.BUSINESS_STORE);
+  if (!businessListings.length) return listings;
+
+  const storeProfileIds = [...new Set(businessListings.filter((l) => l.storeProfile).map((l) => String(l.storeProfile)))];
+  // Legacy listings created before storeProfile was added to the schema
+  // don't have the FK yet — fall back to resolving them by seller.
+  const legacySellerIds = [...new Set(businessListings.filter((l) => !l.storeProfile).map((l) => String(l.seller._id)))];
+
+  const [byId, bySeller] = await Promise.all([
+    storeProfileIds.length
+      ? storeProfileModel.find({ _id: { $in: storeProfileIds }, is_deleted: deleteConstants.NOT_DELETED }).select('seller storeName verificationStatus profileImage').lean()
+      : [],
+    legacySellerIds.length
+      ? storeProfileModel.find({ seller: { $in: legacySellerIds }, is_deleted: deleteConstants.NOT_DELETED }).select('seller storeName verificationStatus profileImage').lean()
+      : [],
+  ]);
+  const storeById = new Map(byId.map((s) => [String(s._id), s]));
+  const storeBySellerId = new Map(bySeller.map((s) => [String(s.seller), s]));
+
   return listings.map((l) => {
-    const store = l.seller?.sellerType === SELLER_TYPES.BUSINESS_STORE ? storeBySellerId.get(String(l.seller._id)) : null;
-    return store ? { ...l, storeProfile: { storeName: store.storeName, verificationStatus: store.verificationStatus } } : l;
+    if (l.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) return l;
+    const store = l.storeProfile ? storeById.get(String(l.storeProfile)) : storeBySellerId.get(String(l.seller._id));
+    return store ? { ...l, storeProfile: { storeName: store.storeName, verificationStatus: store.verificationStatus, profileImageUrl: storeMediaUrl(store.profileImage) } } : l;
   });
 }
 
@@ -411,7 +503,7 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   if (!mongoose.Types.ObjectId.isValid(listingId)) throw new MaterialListingError('Invalid listing id', 404);
   const listing = await materialListingModel
     .findOne({ _id: listingId, is_deleted: deleteConstants.NOT_DELETED })
-    .populate('category', 'name slug')
+    .populate('category', 'name slug logo')
     .populate('subcategory', 'name slug')
     .populate('seller', 'fullName email createdAt sellerType');
   if (!listing) throw new MaterialListingError('Listing not found', 404);
@@ -435,13 +527,15 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
     is_deleted: deleteConstants.NOT_DELETED,
   });
 
-  const withStoreProfile = await attachStoreProfile(listing);
-  if (withStoreProfile.toObject) {
-    const plain = withStoreProfile.toObject();
-    plain.sellerProductsCount = sellerProductsCount;
-    return plain;
-  }
-  withStoreProfile.sellerProductsCount = sellerProductsCount;
+ const withStoreProfile = await attachStoreProfile(listing);
+if (withStoreProfile.toObject) {
+  const plain = withStoreProfile.toObject();
+  plain.sellerProductsCount = sellerProductsCount;
+  if (plain.category) plain.category.logoUrl = storeMediaUrl(plain.category.logo);
+  return plain;
+}
+withStoreProfile.sellerProductsCount = sellerProductsCount;
+if (withStoreProfile.category) withStoreProfile.category.logoUrl = storeMediaUrl(withStoreProfile.category.logo);
   return withStoreProfile;
 }
 
@@ -506,16 +600,26 @@ async function search(filters) {
         $maxDistance: Number(radiusKm) * 1000,
       },
     };
+    const countQuery = { ...query };
+    delete countQuery.status;
+    countQuery['location.geo'] = {
+      $geoWithin: {
+        $centerSphere: [
+          [Number(lng), Number(lat)],
+          (Number(radiusKm) * 1000) / 6378100,
+        ],
+      },
+    };
     const [rawData, count] = await Promise.all([
       // $near already returns each bucket nearest-first, so no explicit
       // sort is passed — fetchStatusOrderedPage only reorders LIVE vs
       // SOLD_OUT, not the proximity ordering within either bucket.
-      fetchStatusOrderedPage({ baseQuery, populate, sort: undefined, skip, limit: pageLimit }),
+      fetchStatusOrderedPage({ baseQuery, countQuery, populate, sort: undefined, skip, limit: pageLimit }),
       // Count must include the same $near radius filter baseQuery carries
       // (status re-added as the combined LIVE/SOLD_OUT set, same as the
       // unfiltered `query` above) — otherwise "N results" would count
       // listings outside the search radius.
-      materialListingModel.countDocuments({ ...baseQuery, status: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT] }),
+      materialListingModel.countDocuments({ ...countQuery, status: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT] }),
     ]);
     // Real backend-computed "N km away" (spec section 13) from the same
     // coordinates $near just queried with — not a second geo lookup, just
@@ -559,7 +663,9 @@ async function myListings({ sellerId, page = 1, limit = 20, status }) {
 
 module.exports = {
   MaterialListingError,
+  MEDIA_FOLDER,
   resolveSupplyType,
+  finalizeSingleMedia,
   createListing,
   updateListing,
   submitForVerification,

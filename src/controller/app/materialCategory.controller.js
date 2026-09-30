@@ -5,7 +5,7 @@ const materialCategoryService = require('../../service/app/materialCategory.serv
 class MaterialCategoryController {
   list = async (request, response, nextFunction) => {
     try {
-      const categories = await materialCategoryService.list();
+      const categories = await materialCategoryService.list(request.query);
       return responseConstants.success(response, 'Categories fetched', categories, statusCodes.OK);
     } catch (error) {
       nextFunction(error);

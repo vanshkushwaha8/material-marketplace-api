@@ -3,10 +3,6 @@ const { LISTING_STATES, VERIFICATION_STATES, CONDITION_TYPES, SUPPLY_TYPES } = r
 const { MATERIAL_UNITS } = require('../constants/materialUnit.constants');
 const deleteConstants = require('../constants/delete.constants');
 
-// Media metadata only — never binary data (spec section 8). Files
-// themselves live under public/materialListingMedia via the existing
-// temp-upload -> helper.moveFileFromFolder() pipeline, same as every
-// other upload in this codebase.
 const geoPointSchema = new mongoose.Schema(
   {
     type: { type: String, enum: ['Point'], default: 'Point' },
@@ -31,51 +27,32 @@ const mediaSchema = new mongoose.Schema(
 const materialListingSchema = new mongoose.Schema(
   {
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'users', required: true, index: true },
-
+    storeProfile: { type: mongoose.Schema.Types.ObjectId, ref: 'store_profiles', default: null, index: true },
     title: { type: String, required: true, trim: true },
     slugUrl: { type: String, trim: true },
     description: { type: String, trim: true, default: '' },
-
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'material_categories', required: true, index: true },
     subcategory: { type: mongoose.Schema.Types.ObjectId, ref: 'material_categories', default: null },
     brand: { type: String, trim: true, default: '' },
     condition: { type: String, enum: Object.values(CONDITION_TYPES), required: true },
-    // Deliberately separate from `condition` — see materialListing.constants.js.
-    // Set server-side in materialListing.service.js#createListing, never
-    // trusted verbatim from an individual seller's request body for
-    // NEW_STOCK, and always forced for Business/Store sellers.
     supplyType: { type: String, enum: Object.values(SUPPLY_TYPES), required: true, index: true },
-
     quantity: { type: Number, required: true, min: 0 },
     availableQuantity: { type: Number, min: 0 },
     reservedQuantity: { type: Number, default: 0, min: 0 },
     soldQuantity: { type: Number, default: 0, min: 0 },
     unit: { type: String, enum: MATERIAL_UNITS, required: true },
-
     price: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'INR' },
     negotiable: { type: Boolean, default: true },
-
-    // Category-specific structured data (spec section 7), validated
-    // per-category by validation/app/materialSpecs.validation.js rather
-    // than by a fixed mongoose shape — this is what lets new categories
-    // be added without a schema migration.
     specifications: { type: mongoose.Schema.Types.Mixed, default: {} },
-
     manufacturingDate: { type: Date, default: null },
     purchaseDate: { type: Date, default: null },
 
-        location: {
+    location: {
       city: { type: String, trim: true, required: true },
       state: { type: String, trim: true, required: true },
       pincode: { type: String, trim: true },
       area: { type: String, trim: true, default: '' },
-      // A real GeoJSON sub-schema, not a plain nested object — the plain
-      // object version above always got auto-instantiated by Mongoose
-      // (defaults on nested paths apply unconditionally), producing an
-      // invalid `{ type: 'Point' }` with no coordinates on every save,
-      // which the 2dsphere index below then rejected. `default: undefined`
-      // on a Schema-typed field is what actually makes it optional.
       geo: { type: geoPointSchema, default: undefined },
     },
 
@@ -108,8 +85,6 @@ const materialListingSchema = new mongoose.Schema(
 materialListingSchema.index({ title: 'text', description: 'text', brand: 'text' });
 materialListingSchema.index({ 'location.geo': '2dsphere' });
 materialListingSchema.index({ status: 1, verificationStatus: 1, category: 1, price: 1, createdAt: -1 });
-// New listings start fully available; existing listings are backfilled
-// by scripts/backfillListingInventory.js.
 materialListingSchema.pre('validate', function (next) {
   if (this.isNew && this.availableQuantity == null) {
     this.availableQuantity = this.quantity;

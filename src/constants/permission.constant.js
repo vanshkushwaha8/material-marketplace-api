@@ -210,10 +210,6 @@ const PERMISSIONSCONSTANTS = {
         MATERIAL_CATEGORY_VIEW: 'manageMaterialCategoryView',
         MATERIAL_CATEGORY_MANAGE: 'manageMaterialCategoryManage',
     },
-    STORECATEGORY: {
-        STORE_CATEGORY_VIEW: 'manageStoreCategoryView',
-        STORE_CATEGORY_MANAGE: 'manageStoreCategoryManage',
-    },
     BUSINESSTYPE: {
         BUSINESS_TYPE_VIEW: 'manageBusinessTypeView',
         BUSINESS_TYPE_MANAGE: 'manageBusinessTypeManage',

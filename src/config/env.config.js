@@ -189,15 +189,15 @@ const configEnv = {
 };
 
 module.exports = configEnv;
-if (require.main !== module) {
-  console.log(
-    configEnv.SUMSUB_ENABLED
-      ? `[KYC] Sumsub identity verification: ENABLED (base ${configEnv.SUMSUB_BASE_URL})`
-      : '[KYC] Sumsub identity verification: SANDBOX MODE (no/invalid SUMSUB_APP_TOKEN + SUMSUB_SECRET_KEY, or SUMSUB_ENABLED=false) — the identity step will show "Simulate approved/rejected" instead of the real Sumsub SDK.'
-  );
-  console.log(
-    configEnv.BANK_REGULATOR_ENABLED
-      ? `[KIIS] Bank regulator review: ENABLED (base ${configEnv.BANK_REGULATOR_API_BASE_URL})`
-      : '[KIIS] Bank regulator review: SANDBOX MODE (no real regulator API configured) — admin "Submit for regulator review" will show a simulator instead of calling a live endpoint.'
-  );
-}
+// if (require.main !== module) {
+//   console.log(
+//     configEnv.SUMSUB_ENABLED
+//       ? `[KYC] Sumsub identity verification: ENABLED (base ${configEnv.SUMSUB_BASE_URL})`
+//       : '[KYC] Sumsub identity verification: SANDBOX MODE (no/invalid SUMSUB_APP_TOKEN + SUMSUB_SECRET_KEY, or SUMSUB_ENABLED=false) — the identity step will show "Simulate approved/rejected" instead of the real Sumsub SDK.'
+//   );
+//   console.log(
+//     configEnv.BANK_REGULATOR_ENABLED
+//       ? `[KIIS] Bank regulator review: ENABLED (base ${configEnv.BANK_REGULATOR_API_BASE_URL})`
+//       : '[KIIS] Bank regulator review: SANDBOX MODE (no real regulator API configured) — admin "Submit for regulator review" will show a simulator instead of calling a live endpoint.'
+//   );
+// }

@@ -22,6 +22,7 @@ const materialCategorySchema = new mongoose.Schema(
     slug: { type: String, required: true, trim: true, lowercase: true, unique: true, index: true },
     parentCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'material_categories', default: null, index: true },
     description: { type: String, trim: true, default: '' },
+    logo: { type: String, trim: true, default: '' },
     specFields: { type: [specFieldSchema], default: [] },
     sortOrder: { type: Number, default: 0 },
     status: { type: String, enum: ['active', 'inactive'], default: 'active', index: true },
