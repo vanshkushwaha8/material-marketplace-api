@@ -50,23 +50,22 @@ class OfferController {
     }
   };
 
-  myAsBuyer = async (request, response, nextFunction) => {
+  listFor = (role, message) => async (request, response, nextFunction) => {
     try {
-      const result = await offerService.myOffers({ userId: request.auth._id, role: 'buyer', status: request.query.status, page: request.query.page, limit: request.query.limit });
-      return responseConstants.success(response, 'Your offers fetched', result, statusCodes.OK);
+      const { error, value } = offerValidation.ValidateList(request.query);
+      const validationError = responseConstants.validatIonError(response, error);
+      if (validationError) return;
+      const result = await offerService.myOffers({ userId: request.auth._id, role, ...value });
+      return responseConstants.success(response, message, result, statusCodes.OK);
     } catch (error) {
       nextFunction(error);
     }
   };
 
-  myAsSeller = async (request, response, nextFunction) => {
-    try {
-      const result = await offerService.myOffers({ userId: request.auth._id, role: 'seller', status: request.query.status, page: request.query.page, limit: request.query.limit });
-      return responseConstants.success(response, 'Offers received fetched', result, statusCodes.OK);
-    } catch (error) {
-      nextFunction(error);
-    }
-  };
+  // ?view=action|waiting|accepted|closed (whose turn it is), plus paging.
+  myAsBuyer = this.listFor('buyer', 'Your offers fetched');
+
+  myAsSeller = this.listFor('seller', 'Offers received fetched');
 }
 
 module.exports = new OfferController();

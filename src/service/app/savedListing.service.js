@@ -57,11 +57,19 @@ async function list({ buyerId, page = 1, limit = 12, search = '' }) {
   const pageLimit = Math.min(100, Number(limit) || 12);
 
   const [rawData, count] = await Promise.all([
-    materialListingModel.find(query).populate('category', 'name slug').sort({ createdAt: -1 }).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
+    materialListingModel.find(query)
+      .populate('category', 'name slug')
+      // Same public seller fields as search — never email/phone.
+      .populate('seller', 'fullName sellerType createdAt profilePicture')
+      .sort({ createdAt: -1 }).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
     materialListingModel.countDocuments(query),
   ]);
 
-  const getData = rawData.map((l) => ({ ...l, isSaved: true }));
+  // Same public shape as search results: seller identity (store profile +
+  // rating) for the card's source line, and never exact coordinates.
+  const { attachStoreProfiles, toPublicLocation } = require('./materialListing.service');
+  const withSeller = await attachStoreProfiles(rawData);
+  const getData = withSeller.map((l) => ({ ...l, location: toPublicLocation(l.location), isSaved: true }));
   return { getData, count };
 }
 

@@ -96,4 +96,12 @@ async function list({ page = 1, limit = 50, status }) {
   return { getData: getData.map(withLogoUrl), count, page: pageNum, limit: pageLimit };
 }
 
-module.exports = { MaterialCategoryError, create, update, remove, list };
+// Any category write invalidates the public (cached) category lists.
+const cache = require('../../helper/cache.helper');
+const invalidating = (fn) => async (...args) => {
+  const result = await fn(...args);
+  await cache.invalidateNamespace(cache.NAMESPACES.CATEGORIES);
+  return result;
+};
+
+module.exports = { MaterialCategoryError, create: invalidating(create), update: invalidating(update), remove: invalidating(remove), list };

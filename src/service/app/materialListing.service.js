@@ -13,6 +13,7 @@ const materialListingValidation = require('../../validation/app/materialListing.
 const helper = require('../../helper/helper');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
+const { notifyAdmins } = require('../admin/adminNotification.service');
 const fs = require('fs/promises');
 const path = require('path');
 
@@ -168,6 +169,21 @@ function buildLocation(body) {
   return location;
 }
   
+// An individual seller's listing without its own coordinates can never show
+// up in radius search. When the listing is in the SAME city as the seller's
+// registered location, reuse that point (the seller's own captured
+// coordinates — never a city/pincode centroid). A listing in another city
+// without coordinates stays geo-less rather than being placed wrongly.
+function withProfileCoordinatesFallback(location, seller) {
+  if (location.geo) return location;
+  const profile = seller?.location;
+  const sameCity = profile?.city && location.city && profile.city.trim().toLowerCase() === location.city.trim().toLowerCase();
+  if (sameCity && profile.geo?.coordinates?.length === 2) {
+    return { ...location, geo: { type: 'Point', coordinates: [...profile.geo.coordinates] } };
+  }
+  return location;
+}
+
 // Business/Store listings carry no location of their own — they mirror
 // the store profile's, so the seller enters it once (Store Profile page).
 function locationFromStore(storeProfile) {
@@ -198,7 +214,7 @@ async function createListing({ sellerId, body, req }) {
     specifications: body.specifications,
   });
 
-      const seller = await userModel.findById(sellerId).select('sellerType');
+  const seller = await userModel.findById(sellerId).select('sellerType location');
   let storeProfileId = null;
   let listingLocation = null;
   if (seller?.sellerType === SELLER_TYPES.BUSINESS_STORE) {
@@ -225,12 +241,7 @@ async function createListing({ sellerId, body, req }) {
 
   if (!listingLocation) {
     if (!body.location) throw new MaterialListingError('Location is required', 400);
-    listingLocation = buildLocation(body);
-  }
-
-  if (!listingLocation) {
-    if (!body.location) throw new MaterialListingError('Location is required', 400);
-    listingLocation = buildLocation(body);
+    listingLocation = withProfileCoordinatesFallback(buildLocation(body), seller);
   }
 
   const supplyType = resolveSupplyType(seller?.sellerType, body.supplyType);
@@ -295,7 +306,7 @@ async function updateListing({ sellerId, listingId, body, req }) {
     throw new MaterialListingError(`Cannot edit a listing that is ${listing.status}`, 409);
   }
 
-  const seller = await userModel.findById(sellerId).select('sellerType');
+  const seller = await userModel.findById(sellerId).select('sellerType location');
   const isBusinessStore = seller?.sellerType === SELLER_TYPES.BUSINESS_STORE;
 
   // A Business/Store seller's condition/category are as strictly gated on
@@ -381,7 +392,15 @@ async function updateListing({ sellerId, listingId, body, req }) {
     const storeForLocation = storeProfile || await storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED });
     if (storeForLocation) listing.location = locationFromStore(storeForLocation);
   } else if (body.location) {
-    listing.location = buildLocation(body);
+    const next = buildLocation(body);
+    // An edit that doesn't resend coordinates keeps the listing's existing
+    // point as long as it's still in the same city.
+    const prev = listing.location;
+    const sameCity = prev?.city && next.city && prev.city.trim().toLowerCase() === next.city.trim().toLowerCase();
+    if (!next.geo && sameCity && prev.geo?.coordinates?.length === 2) {
+      next.geo = { type: 'Point', coordinates: [...prev.geo.coordinates] };
+    }
+    listing.location = withProfileCoordinatesFallback(next, seller);
   }
 
   if (body.images) listing.images = await finalizeMediaFiles(body.images);
@@ -398,8 +417,16 @@ async function updateListing({ sellerId, listingId, body, req }) {
     listing.stateHistory.push({ fromStatus, toStatus: listing.status, changedBy: sellerId, changedByType: 'seller', reason: 'Listing edited — resubmitted for verification' });
   }
 
+  const wentBackToModeration = listing.isModified('status') && listing.status === LISTING_STATES.PENDING_VERIFICATION;
   await listing.save();
   await createAuditLog({ req, userId: sellerId, action: auditLogConstants.MATERIAL_LISTING_UPDATED || 'MATERIAL_LISTING_UPDATED', entity: 'material_listings', entityId: listing._id });
+  if (wentBackToModeration) {
+    await notifyAdmins('LISTING_PENDING_REVIEW', {
+      title: 'Live listing edited — re-review needed',
+      message: `"${listing.title}" was edited by the seller and is hidden from buyers until re-approved.`,
+      entityType: 'listing', entityId: listing._id, entityName: listing.title, userId: sellerId,
+    });
+  }
   return listing;
 }
 
@@ -414,6 +441,11 @@ async function submitForVerification({ sellerId, listingId, req }) {
   listing.stateHistory.push({ fromStatus, toStatus: listing.status, changedBy: sellerId, changedByType: 'seller', reason: 'Submitted for verification' });
   await listing.save();
   await createAuditLog({ req, userId: sellerId, action: auditLogConstants.MATERIAL_LISTING_SUBMITTED || 'MATERIAL_LISTING_SUBMITTED', entity: 'material_listings', entityId: listing._id });
+  await notifyAdmins('LISTING_PENDING_REVIEW', {
+    title: fromStatus === LISTING_STATES.REJECTED ? 'Rejected listing resubmitted' : 'New listing to review',
+    message: `"${listing.title}" is waiting for moderation.`,
+    entityType: 'listing', entityId: listing._id, entityName: listing.title, userId: sellerId,
+  });
   return listing;
 }
 
@@ -472,7 +504,22 @@ async function attachStoreProfile(listing) {
   return listing;
 }
 
+// Buyer-facing seller identity on every listing card: the store profile
+// for Business/Store sellers plus each seller's real rating (visible buyer
+// ratings only — see review.service getSellerRatingStats). One aggregate
+// per page, never per card.
 async function attachStoreProfiles(listings) {
+  const withStores = await attachStoreProfilesOnly(listings);
+  const sellerIds = withStores.map((l) => l.seller?._id).filter(Boolean);
+  if (!sellerIds.length) return withStores;
+  const stats = await require('./review.service').getSellerRatingStats(sellerIds).catch(() => new Map());
+  return withStores.map((l) => {
+    const r = l.seller?._id && stats.get(String(l.seller._id));
+    return r ? { ...l, seller: { ...l.seller, rating: r.average, ratingCount: r.count } } : l;
+  });
+}
+
+async function attachStoreProfilesOnly(listings) {
   const businessListings = listings.filter((l) => l.seller?.sellerType === SELLER_TYPES.BUSINESS_STORE);
   if (!businessListings.length) return listings;
 
@@ -499,18 +546,33 @@ async function attachStoreProfiles(listings) {
   });
 }
 
+// Public responses never carry a listing's exact coordinates — for an
+// INDIVIDUAL seller that point is usually their home. Buyers get the
+// server-computed `distanceKm` plus city/area instead (spec: location
+// privacy). Owners/admins read listings through their own endpoints.
+function toPublicLocation(location) {
+  if (!location) return location;
+  const { geo, ...rest } = location.toObject ? location.toObject() : location;
+  return rest;
+}
+
 async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   if (!mongoose.Types.ObjectId.isValid(listingId)) throw new MaterialListingError('Invalid listing id', 404);
   const listing = await materialListingModel
     .findOne({ _id: listingId, is_deleted: deleteConstants.NOT_DELETED })
     .populate('category', 'name slug logo')
     .populate('subcategory', 'name slug')
-    .populate('seller', 'fullName email createdAt sellerType');
+    // Never email/phone — this endpoint is public.
+    .populate('seller', 'fullName createdAt sellerType');
   if (!listing) throw new MaterialListingError('Listing not found', 404);
 
   const isOwner = viewerId && String(listing.seller._id) === String(viewerId);
   if (!isOwner && !viewerIsAdmin && !BUYER_VISIBLE_STATES.includes(listing.status)) {
-    throw new MaterialListingError('Listing not found', 404);
+    // A buyer already negotiating/transacting on a listing that has since
+    // gone back to moderation (seller edited it) must still be able to open
+    // it from their offers page — nobody else can see unmoderated listings.
+    const hasOffer = viewerId && await offerModel.exists({ listing: listing._id, buyer: viewerId, is_deleted: deleteConstants.NOT_DELETED });
+    if (!hasOffer) throw new MaterialListingError('Listing not found', 404);
   }
   if (!isOwner && !viewerIsAdmin) {
     materialListingModel.updateOne({ _id: listing._id }, { $inc: { viewCount: 1 } }).catch(() => {});
@@ -527,16 +589,12 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
     is_deleted: deleteConstants.NOT_DELETED,
   });
 
- const withStoreProfile = await attachStoreProfile(listing);
-if (withStoreProfile.toObject) {
-  const plain = withStoreProfile.toObject();
+  const withStoreProfile = await attachStoreProfile(listing);
+  const plain = withStoreProfile.toObject ? withStoreProfile.toObject() : withStoreProfile;
   plain.sellerProductsCount = sellerProductsCount;
   if (plain.category) plain.category.logoUrl = storeMediaUrl(plain.category.logo);
+  if (!isOwner && !viewerIsAdmin) plain.location = toPublicLocation(plain.location);
   return plain;
-}
-withStoreProfile.sellerProductsCount = sellerProductsCount;
-if (withStoreProfile.category) withStoreProfile.category.logoUrl = storeMediaUrl(withStoreProfile.category.logo);
-  return withStoreProfile;
 }
 
 async function search(filters) {
@@ -547,6 +605,11 @@ async function search(filters) {
     city, state, lat, lng, radiusKm, sort = 'newest',
   } = filters;
 
+  // The list validator allows '' for every optional filter (so an empty
+  // form field can be sent as-is) — '' must mean "not filtering", never
+  // Number('') === 0 or Boolean('') === false.
+  const isSet = (v) => v !== undefined && v !== null && v !== '';
+
   const query = { status: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT,], is_deleted: deleteConstants.NOT_DELETED };
   if (sellerId) query.seller = sellerId; // storeProfile.service.js#getStoreProducts — one seller's own storefront
   if (category) query.category = category;
@@ -554,14 +617,15 @@ async function search(filters) {
   if (condition) query.condition = condition;
   if (supplyType) query.supplyType = supplyType;
   if (brand) query.brand = { $regex: brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-  if (minPrice != null || maxPrice != null) {
+  if (isSet(minPrice) || isSet(maxPrice)) {
     query.price = {};
-    if (minPrice != null) query.price.$gte = Number(minPrice);
-    if (maxPrice != null) query.price.$lte = Number(maxPrice);
+    if (isSet(minPrice)) query.price.$gte = Number(minPrice);
+    if (isSet(maxPrice)) query.price.$lte = Number(maxPrice);
   }
-  if (minQuantity != null) query.quantity = { $gte: Number(minQuantity) };
-  if (negotiable != null) query.negotiable = Boolean(negotiable);
-  if (verified) query.verificationStatus = VERIFICATION_STATES.VERIFIED;
+  // What a buyer can actually still buy — not the listing's original total.
+  if (isSet(minQuantity)) query.availableQuantity = { $gte: Number(minQuantity) };
+  if (isSet(negotiable)) query.negotiable = negotiable === true || negotiable === 'true';
+  if (verified === true || verified === 'true') query.verificationStatus = VERIFICATION_STATES.VERIFIED;
   if (city) query['location.city'] = { $regex: `^${city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
   if (state) query['location.state'] = { $regex: `^${state.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
   if (text) query.$text = { $search: text };
@@ -585,13 +649,15 @@ async function search(filters) {
   // row, EnquireModal's success message) — only fullName/createdAt, never
   // email/phone, to the public search response. sellerType drives the
   // Individual/Business card treatment (attachStoreProfiles below).
+  // profilePicture is the avatar the seller chose to show (individual
+  // seller page) — a filename only, no contact data.
   const populate = [
     ['category', 'name slug'],
-    ['seller', 'fullName sellerType createdAt'],
+    ['seller', 'fullName sellerType createdAt profilePicture'],
   ];
   const skip = (pageNum - 1) * pageLimit;
 
-  if (lat != null && lng != null && radiusKm) {
+  if (isSet(lat) && isSet(lng) && isSet(radiusKm)) {
     const baseQuery = { ...query };
     delete baseQuery.status;
     baseQuery['location.geo'] = {
@@ -630,6 +696,7 @@ async function search(filters) {
       distanceKm: listing.location?.geo?.coordinates
         ? Math.round(haversineKm(origin, listing.location.geo.coordinates) * 10) / 10
         : undefined,
+      location: toPublicLocation(listing.location),
     }));
     return { getData: await attachStoreProfiles(withDistance), count, page: pageNum, limit: pageLimit };
   }
@@ -646,7 +713,8 @@ async function search(filters) {
     fetchStatusOrderedPage({ baseQuery, populate, sort: sortMap[sort] || sortMap.newest, skip, limit: pageLimit }),
     materialListingModel.countDocuments(query),
   ]);
-  return { getData: await attachStoreProfiles(rawData), count, page: pageNum, limit: pageLimit };
+  const publicRows = rawData.map((listing) => ({ ...listing, location: toPublicLocation(listing.location) }));
+  return { getData: await attachStoreProfiles(publicRows), count, page: pageNum, limit: pageLimit };
 }
 
 async function myListings({ sellerId, page = 1, limit = 20, status }) {
@@ -675,4 +743,6 @@ module.exports = {
   getMine,
   search,
   myListings,
+  attachStoreProfiles,
+  toPublicLocation,
 };

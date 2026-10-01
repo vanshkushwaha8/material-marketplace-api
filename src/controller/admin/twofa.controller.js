@@ -224,7 +224,7 @@ class TwofaController {
   };
   getStatus = async (req, res, next) => {
     try {
-      const result = await twofaService.getStatus(req.auth._id);
+      const result = await twofaService.getStatus(req.auth._id, adminModel);
       return responseConstants.success(res, '2FA status retrieved.', result, statusCodes.OK);
     } catch (err) {
       next(err);

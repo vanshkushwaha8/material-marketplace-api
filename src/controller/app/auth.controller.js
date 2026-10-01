@@ -173,6 +173,47 @@ class authController {
     }
   };
 
+  // POST /v1/google-login { idToken, userType? } — Google Identity Services
+  // ID token, verified server-side (googleAuth.service.js). Same outcome
+  // shapes as the password login: requires2FA / needConsentUpdate / session.
+  googleLogin = async (request, response, nextFunction) => {
+    try {
+      const { idToken, userType } = request.body || {};
+      if (typeof idToken !== 'string' || idToken.length < 20 || idToken.length > 4096) {
+        return responseConstants.BadRequest(response, 'A Google ID token is required', null, statusCodes.BAD_REQUEST);
+      }
+      const googleAuth = require('../../service/app/googleAuth.service');
+      const resolved = await googleAuth.resolveUser({ idToken, userType, req: request });
+      if (resolved.needUserType) {
+        return response.status(statusCodes.OK).json({
+          status: true, needUserType: true, message: 'Choose how you want to use BUILD MATERIAL',
+          data: { needUserType: true, email: resolved.email, name: resolved.name },
+        });
+      }
+      const userData = resolved.user;
+      if (userData.status === 'suspended') {
+        return responseConstants.Forbidden(response, messageConstants.USER.INVALID_CREDENTIALS, null, statusCodes.OK);
+      }
+      const result = await authService.completeLogin(request, userData);
+      if (result.data.setupToken) {
+        setAuthCookie(response, result.data.setupToken, { maxAge: 15 * 60 * 1000 });
+        const { setupToken, ...rest } = result.data;
+        return responseConstants.success(response, result.message, rest, statusCodes.OK);
+      }
+      if (result.data.token) {
+        setAuthCookie(response, result.data.token);
+        const { token, ...rest } = result.data;
+        return responseConstants.success(response, result.message, { ...rest, createdVia: resolved.created ? 'google' : undefined }, statusCodes.OK);
+      }
+      return responseConstants.success(response, result.message, result.data, statusCodes.OK); // requires2FA
+    } catch (error) {
+      if (error?.name === 'GoogleAuthError') {
+        return response.status(error.statusCode || 400).json({ status: false, message: error.message, code: error.errorCode || undefined });
+      }
+      nextFunction(error);
+    }
+  };
+
   accountDelete = async (request, response, nextFunction) => {
     try {
       const { error } = await authValidation.validateAccountDelete(request.body);
@@ -204,23 +245,10 @@ class authController {
         validationResult.error
       );
       if (validationError) return;
-      request.body.email = request.body.email?.trim().toLowerCase();
-      if (request.body.email) {
-        const existingUserWithEmail = await userModel.findOne({
-          email: request.body.email,
-          is_deleted: deleteConstants.NOT_DELETED,
-          _id: { $ne: request.auth?._id },
-        });
-
-        if (existingUserWithEmail) {
-          return responseConstants.Forbidden(
-            response,
-            messageConstants.USER.EMAIL_EXISTS,
-            null,
-            statusCodes.FORBIDDEN
-          );
-        }
-      }
+      // Use the VALIDATED value from here on — it has userType/email
+      // stripped (not self-service) and the location shape normalised.
+      // authService.update used to $set the raw request body.
+      request.body = validationResult.value;
       if (request.body.phoneNumber) {
         const existingUserWithPhone = await userModel.findOne({
           phoneNumber: request.body.phoneNumber,

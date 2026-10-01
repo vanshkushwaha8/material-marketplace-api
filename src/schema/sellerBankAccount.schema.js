@@ -17,6 +17,10 @@ const sellerBankAccountSchema = new mongoose.Schema(
     provider: { type: String, required: true },
     providerContactId: { type: String, default: null },
     providerFundAccountId: { type: String, default: null, index: true },
+    // RazorpayX penny-drop validations are asynchronous — kept so a later
+    // status check reads the SAME validation instead of starting (and
+    // paying for) a new penny drop every time.
+    providerValidationId: { type: String, default: null },
 
     verificationStatus: { type: String, enum: Object.values(BANK_ACCOUNT_STATES), default: BANK_ACCOUNT_STATES.PENDING, index: true },
     verificationMethod: { type: String, default: '' },

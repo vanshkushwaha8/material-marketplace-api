@@ -16,6 +16,27 @@ const { createAuditLog, createAuditLogAdmin } = require('../../helper/audit.help
 const auditLogConstants = require('../../constants/auditLogConstants');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_TYPES } = require('../../constants/notification.constants');
+const { notifyAdmins } = require('../admin/adminNotification.service');
+const escrow = require('./escrow.service');
+const { ESCROW_STATES, ESCROW_ACTORS, ESCROW_TRANSITIONS } = require('../../constants/escrow.constants');
+
+// Escrow side-effects of payment attempts. Never throw into the payment
+// flow: an escrow already past these states (e.g. PAID) simply ignores them.
+const escrowSafe = (args) => escrow.transition(args).catch((err) => {
+  if (!(err instanceof escrow.EscrowTransitionError)) console.error('[payment] escrow update failed:', err.message);
+  return null;
+});
+
+// Webhook payloads are kept for audit/reconciliation, minus buyer PII and
+// payment-instrument details (cards, UPI ids, bank accounts, contact info).
+const REDACT_KEYS = new Set(['email', 'contact', 'card', 'vpa', 'bank', 'wallet', 'upi', 'acquirer_data', 'customer_details', 'bank_account', 'fund_account']);
+function redact(value) {
+  if (Array.isArray(value)) return value.map(redact);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, REDACT_KEYS.has(k) ? '[redacted]' : redact(v)]));
+  }
+  return value;
+}
 class PaymentError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
@@ -42,6 +63,7 @@ async function loadPayableTransaction(transactionId, buyerId) {
 
 async function createPaymentOrder({ transactionId, buyerId, req }) {
   const txn = await loadPayableTransaction(transactionId, buyerId);
+  await escrowSafe({ transactionId: txn._id, action: 'START_PAYMENT', actor: { type: ESCROW_ACTORS.BUYER, id: buyerId }, amount: txn.agreedAmount, req });
 
   const existing = await paymentModel.findOne({
     transaction: txn._id,
@@ -99,6 +121,8 @@ async function createManualTestPayment({ transactionId, buyerId, req }) {
     throw new PaymentError('Manual test payment is disabled', 404);
   }
   const txn = await loadPayableTransaction(transactionId, buyerId);
+  // Same escrow steps as the real checkout (INITIATED → PROCESSING → PAID).
+  await escrowSafe({ transactionId: txn._id, action: 'START_PAYMENT', actor: { type: ESCROW_ACTORS.BUYER, id: buyerId }, amount: txn.agreedAmount, req });
 
   let payment = await paymentModel.findOne({
     transaction: txn._id,
@@ -172,39 +196,107 @@ async function verifyPayment({ buyerId, providerOrderId, providerPaymentId, sign
     payment.failureReason = 'Signature verification failed';
     payment.history.push({ action: 'VERIFY_FAILED' });
     await payment.save();
+    await escrowSafe({ transactionId: payment.transaction, action: 'PAYMENT_FAILED', actor: { type: ESCROW_ACTORS.SYSTEM }, reason: 'Payment signature verification failed', req });
     await createAuditLog({ req, userId: buyerId, action: auditLogConstants.PAYMENT_VERIFICATION_FAILED, entity: 'payments', entityId: payment._id });
     throw new PaymentError('Payment verification failed', 400);
   }
 
-  await confirmPaymentSuccess({ payment, providerPaymentId, req });
-  return { payment, alreadyProcessed: false };
+  // The signature only proves "this payment id belongs to this order". Ask
+  // the provider what was actually captured before touching any state —
+  // the frontend is never authoritative for money.
+  const providerPayment = await adapter.fetchPayment(providerPaymentId);
+  const mismatch = describeCaptureMismatch(payment, {
+    orderId: providerPayment.orderId, amountPaise: providerPayment.amountPaise, currency: providerPayment.currency,
+  });
+  if (mismatch) {
+    await flagForReconciliation(payment._id, mismatch, req);
+    throw new PaymentError('Payment could not be matched to this order — our team has been notified', 409);
+  }
+  const providerStatus = String(providerPayment.status || '').toLowerCase();
+  if (providerStatus === 'authorized') {
+    // Money authorised but not captured yet — the payment.captured webhook
+    // completes it. Not a failure; the transaction just isn't paid yet.
+    const processing = await paymentModel.findOneAndUpdate(
+      { _id: payment._id, status: { $in: [PAYMENT_STATES.CREATED, PAYMENT_STATES.PENDING] } },
+      { $set: { status: PAYMENT_STATES.PROCESSING, providerPaymentId }, $push: { history: { action: 'AUTHORIZED_AWAITING_CAPTURE' } } },
+      { new: true }
+    );
+    return { payment: processing || await paymentModel.findById(payment._id), alreadyProcessed: false, awaitingCapture: true };
+  }
+  if (providerStatus !== 'captured') {
+    throw new PaymentError(`Payment is not complete (provider status: ${providerStatus || 'unknown'})`, 409);
+  }
+
+  const confirmed = await confirmPaymentSuccess({ payment, providerPaymentId, method: providerPayment.method, req });
+  return { payment: confirmed, alreadyProcessed: false };
+}
+
+// Compares what the provider says was captured with the order this
+// backend created. Returns a human-readable reason, or null when it matches.
+function describeCaptureMismatch(payment, { orderId, amountPaise, currency }) {
+  if (orderId && orderId !== payment.providerOrderId) return `Captured against order ${orderId}, expected ${payment.providerOrderId}`;
+  if (amountPaise != null && Number(amountPaise) !== Number(payment.amountPaise)) return `Captured ${amountPaise} paise, expected ${payment.amountPaise}`;
+  if (currency && String(currency).toUpperCase() !== String(payment.currency || 'INR').toUpperCase()) return `Captured in ${currency}, expected ${payment.currency}`;
+  return null;
+}
+
+async function flagForReconciliation(paymentId, reason, req) {
+  const flagged = await paymentModel.findByIdAndUpdate(
+    paymentId,
+    { $set: { reconciliationRequired: true, reconciliationReason: reason }, $push: { history: { action: 'RECONCILIATION_REQUIRED', note: reason } } },
+    { new: true }
+  );
+  await createAuditLog({ req, userId: flagged?.buyer, action: auditLogConstants.PAYMENT_RECONCILIATION_REQUIRED, entity: 'payments', entityId: paymentId, metadata: { reason } });
+  // A buyer was charged for something the marketplace couldn't apply —
+  // someone has to refund or reconcile it.
+  await notifyAdmins('PAYMENT_RECONCILIATION_REQUIRED', {
+    title: 'Payment needs refund / reconciliation',
+    message: `₹${((flagged?.amountPaise || 0) / 100).toLocaleString('en-IN')} captured but not applied: ${reason}`,
+    entityType: 'payment', entityId: paymentId, userId: flagged?.buyer,
+    metadata: { providerOrderId: flagged?.providerOrderId, providerPaymentId: flagged?.providerPaymentId },
+  });
+  return flagged;
 }
 
 // Single idempotent transition to SUCCESS — safe to call twice (webhook +
-// callback both racing) because it re-checks status under the payment's
-// own document before doing anything.
+// callback both racing): the conditional update means exactly one caller
+// flips the payment, and only that caller advances the transaction or
+// sends notifications.
 async function confirmPaymentSuccess({ payment, providerPaymentId, method, req }) {
-  const fresh = await paymentModel.findById(payment._id);
-  if (fresh.status === PAYMENT_STATES.SUCCESS) return fresh; // already handled by the other path
+  const fresh = await paymentModel.findOneAndUpdate(
+    {
+      _id: payment._id,
+      // FAILED is included: a buyer can retry inside the same provider
+      // order after a failed attempt, and that later capture is real money.
+      status: { $in: [PAYMENT_STATES.CREATED, PAYMENT_STATES.PENDING, PAYMENT_STATES.PROCESSING, PAYMENT_STATES.FAILED] },
+    },
+    {
+      $set: { providerPaymentId, status: PAYMENT_STATES.SUCCESS, failureReason: '', ...(method ? { method } : {}) },
+      $push: { history: { action: 'PAYMENT_SUCCESS' } },
+    },
+    { new: true }
+  );
+  if (!fresh) return paymentModel.findById(payment._id); // the other path already handled it
 
-  fresh.providerPaymentId = providerPaymentId;
-  fresh.status = PAYMENT_STATES.SUCCESS;
-  if (method) fresh.method = method;
-  fresh.history.push({ action: 'PAYMENT_SUCCESS' });
-  await fresh.save();
-
-  await transactionService.markPaymentConfirmed({ transactionId: fresh.transaction, req });
+  const { txn, advanced } = await transactionService.markPaymentConfirmed({ transactionId: fresh.transaction, providerPaymentId, req });
+  if (!advanced) {
+    // Captured money that can't be applied: the reservation expired or was
+    // cancelled first, or another payment already paid this transaction.
+    // The buyer HAS been charged — flag for refund/reconciliation instead
+    // of telling the seller to hand over goods for a dead transaction.
+    return flagForReconciliation(fresh._id, `Captured while transaction was ${txn?.status || 'missing'} — refund or reconcile`, req);
+  }
   const paidAmount = `₹${(fresh.amountPaise / 100).toLocaleString('en-IN')}`;
   await notificationService.createNotification({
     recipientId: fresh.buyer, type: NOTIFICATION_TYPES.PAYMENT_SUCCESS,
-    title: 'Payment successful', message: `Your payment of ${paidAmount} was confirmed`,
+    title: 'Payment successful — held securely', message: `Your payment of ${paidAmount} is held by BUILD MATERIAL and is only released to the seller after you confirm receipt`,
     entityType: 'transaction', entityId: fresh.transaction,
   });
   // Actor is the buyer here — they're the one who just paid; the seller is
   // the receiver being told about it.
   await notificationService.createNotification({
     recipientId: fresh.seller, actorId: fresh.buyer, type: NOTIFICATION_TYPES.PAYMENT_RECEIVED,
-    title: 'Payment received', message: (actorName) => `${actorName || 'The buyer'} paid ${paidAmount} — please proceed with handover`,
+    title: 'Payment received and held', message: (actorName) => `${actorName || 'The buyer'} paid ${paidAmount}. It is held until you deliver and the buyer confirms receipt — please proceed with handover`,
     entityType: 'transaction', entityId: fresh.transaction,
   });
   await createAuditLog({ req, userId: fresh.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'payments', entityId: fresh._id });
@@ -217,28 +309,57 @@ async function confirmPaymentSuccess({ payment, providerPaymentId, method, req }
 async function handleWebhook({ rawBody, signature, payload }) {
   const adapter = getPaymentAdapter();
   const validSignature = await adapter.verifyWebhookSignature({ rawBody, signature });
-  if (!validSignature) throw new PaymentError('Invalid webhook signature', 401);
+  if (!validSignature) {
+    // Either a misconfigured PAYMENT_WEBHOOK_SECRET (real payments stop
+    // confirming) or someone probing the endpoint — both need a human.
+    // One alert per hour, not one per request.
+    await notifyAdmins('WEBHOOK_SIGNATURE_INVALID', {
+      title: 'Payment webhook rejected — invalid signature',
+      message: configenv.PAYMENT_WEBHOOK_SECRET
+        ? 'A webhook call failed signature verification. Check PAYMENT_WEBHOOK_SECRET matches the Razorpay dashboard, or investigate spoofing attempts.'
+        : 'PAYMENT_WEBHOOK_SECRET is not set, so every payment webhook is rejected and payments may not confirm. Configure it now.',
+      dedupeKey: `WEBHOOK_SIGNATURE_INVALID:${new Date().toISOString().slice(0, 13)}`,
+      metadata: { eventType: payload?.event || null },
+    });
+    throw new PaymentError('Invalid webhook signature', 401);
+  }
 
   const eventId = payload.id || payload.event_id;
   const eventType = payload.event;
   try {
-    await paymentWebhookEventModel.create({ provider: configenv.PAYMENT_PROVIDER || 'manual', eventId, eventType, payload });
+    await paymentWebhookEventModel.create({ provider: configenv.PAYMENT_PROVIDER || 'manual', eventId, eventType, payload: redact(payload) });
   } catch (err) {
     if (err.code === 11000) return { duplicate: true }; // already processed — ack without reprocessing
     throw err;
   }
 
-  const entity = payload.payload?.payment?.entity || payload.payload?.refund?.entity;
+  // RazorpayX payout events → payout.service (release confirmed / failed).
+  if (String(eventType || '').startsWith('payout.')) {
+    const payoutEntity = payload.payload?.payout?.entity;
+    if (!payoutEntity) return { ignored: true };
+    await require('./payout.service').handlePayoutWebhook({ eventType, entity: payoutEntity });
+    return { processed: true, eventType };
+  }
+
+  const entity = payload.payload?.refund?.entity || payload.payload?.payment?.entity;
   if (!entity) return { ignored: true };
 
   if (eventType === 'payment.captured') {
     const payment = await paymentModel.findOne({ providerOrderId: entity.order_id });
-    if (payment) await confirmPaymentSuccess({ payment, providerPaymentId: entity.id, method: entity.method });
+    if (payment) {
+      const mismatch = describeCaptureMismatch(payment, { orderId: entity.order_id, amountPaise: entity.amount, currency: entity.currency });
+      if (mismatch) await flagForReconciliation(payment._id, mismatch);
+      else await confirmPaymentSuccess({ payment, providerPaymentId: entity.id, method: entity.method });
+    }
   } else if (eventType === 'payment.failed') {
     await paymentModel.updateOne(
       { providerOrderId: entity.order_id, status: { $ne: PAYMENT_STATES.SUCCESS } },
       { $set: { status: PAYMENT_STATES.FAILED, failureReason: entity.error_description || 'Payment failed at provider' }, $push: { history: { action: 'PAYMENT_FAILED_WEBHOOK' } } }
     );
+    const failedFor = await paymentModel.findOne({ providerOrderId: entity.order_id }).select('transaction status').lean();
+    if (failedFor && failedFor.status === PAYMENT_STATES.FAILED) {
+      await escrowSafe({ transactionId: failedFor.transaction, action: 'PAYMENT_FAILED', actor: { type: ESCROW_ACTORS.PROVIDER }, reason: entity.error_description || 'Payment failed at provider', providerRef: entity.id || '' });
+    }
 
  const failedPayment = await paymentModel.findOne({
     providerOrderId: entity.order_id
@@ -255,43 +376,61 @@ async function handleWebhook({ rawBody, signature, payload }) {
     });
   }
   } else if (eventType === 'refund.processed') {
-    const payment = await paymentModel.findOne({ providerPaymentId: entity.payment_id });
-    // Idempotency: a second refund.processed for an already-REFUNDED
-    // payment (e.g. webhook redelivery) is a no-op rather than pushing a
-    // duplicate refund record and re-touching the transaction.
-    if (payment && payment.status !== PAYMENT_STATES.REFUNDED) {
-      const fullyRefunded = entity.amount >= payment.amountPaise;
-      payment.status = fullyRefunded ? PAYMENT_STATES.REFUNDED : PAYMENT_STATES.PARTIALLY_REFUNDED;
-      payment.refunds.push({ providerRefundId: entity.id, amountPaise: entity.amount, status: 'processed' });
-      await payment.save();
-      await createAuditLog({ userId: payment.buyer, action: auditLogConstants.REFUND_INITIATED, entity: 'payments', entityId: payment._id, metadata: { providerRefundId: entity.id, amountPaise: entity.amount, fullyRefunded } });
-
-      if (fullyRefunded) {
-        const txn = await transactionModel.findById(payment.transaction);
-        // Guarded, not a blind updateOne: never re-stamp a transaction
-        // that's already REFUNDED (idempotent), and leave a reconciliation
-        // trail rather than silently overwriting a COMPLETED/DISPUTED one.
-        if (txn && txn.status !== TRANSACTION_STATES.REFUNDED) {
-          const payout = await payoutModel.findOne({ transaction: txn._id });
-          const alreadySettled = payout && payout.status === PAYOUT_STATES.PAID;
-          const previousStatus = txn.status;
-          txn.status = TRANSACTION_STATES.REFUNDED;
-          // Leave a SETTLED commission ledger alone if the seller was
-          // already paid before this refund landed — that mismatch is
-          // exactly what needs admin reconciliation, not a silent flip.
-          if (!alreadySettled) txn.commissionStatus = COMMISSION_STATES.REFUNDED;
-          txn.history.push({
-            action: 'REFUNDED', by: 'system',
-            note: alreadySettled
-              ? `Refunded by provider after seller payout was already PAID (was ${previousStatus}) — needs admin reconciliation`
-              : `Refunded by provider (was ${previousStatus})`,
-          });
-          await txn.save();
-        }
-      }
+    await handleRefundProcessed(entity);
+  } else if (eventType === 'refund.failed') {
+    const payment = await paymentModel.findOne({ providerPaymentId: entity.payment_id }).select('transaction').lean();
+    if (payment) {
+      await require('./refund.service').failRefund({
+        transactionId: payment.transaction, providerRefundId: entity.id,
+        reason: entity.error_description || entity.status_details?.description || 'Refund failed at the payment provider',
+      });
     }
   }
   return { processed: true, eventType };
+}
+
+// refund.processed — normally the completion of a refund we requested
+// (escrow REFUND_PENDING). A refund made directly in the provider dashboard
+// is still recorded through the state machine when the escrow allows it;
+// otherwise (seller already paid, partial refund) it is flagged for admin.
+async function handleRefundProcessed(entity) {
+  const refundService = require('./refund.service');
+  const payment = await paymentModel.findOne({ providerPaymentId: entity.payment_id });
+  if (!payment) return;
+  const fullyRefunded = Number(entity.amount) >= Number(payment.amountPaise);
+  const txn = await escrow.loadWithEscrow(payment.transaction);
+  if (!txn) return;
+
+  if (!fullyRefunded) {
+    await paymentModel.updateOne({ _id: payment._id, status: PAYMENT_STATES.SUCCESS }, { $set: { status: PAYMENT_STATES.PARTIALLY_REFUNDED }, $push: { refunds: { providerRefundId: entity.id, amountPaise: entity.amount, status: 'processed' }, history: { action: 'PARTIAL_REFUND_PROCESSED' } } });
+    await transactionModel.updateOne({ _id: txn._id }, { $set: { escrowAttentionReason: `Partial refund of ₹${(entity.amount / 100).toLocaleString('en-IN')} made at the provider — reconcile` } });
+    await notifyAdmins('PAYMENT_RECONCILIATION_REQUIRED', {
+      title: 'Partial refund made at the provider',
+      message: `₹${(entity.amount / 100).toLocaleString('en-IN')} of ₹${(payment.amountPaise / 100).toLocaleString('en-IN')} was refunded outside the escrow flow (${entity.id}). Reconcile the seller settlement.`,
+      entityType: 'transaction', entityId: txn._id, userId: payment.buyer,
+    });
+    return;
+  }
+
+  if (txn.escrowStatus === ESCROW_STATES.REFUND_PENDING) {
+    await refundService.completeRefund({ transactionId: txn._id, providerRefundId: entity.id, amountPaise: entity.amount });
+    return;
+  }
+  if (txn.escrowStatus === ESCROW_STATES.REFUNDED) return; // duplicate delivery
+  if (ESCROW_TRANSITIONS.REQUEST_REFUND.from.includes(txn.escrowStatus)) {
+    // Refunded from the provider dashboard: record it the same way.
+    await escrowSafe({ transactionId: txn._id, action: 'REQUEST_REFUND', actor: { type: ESCROW_ACTORS.PROVIDER }, reason: 'Refund initiated at the payment provider', providerRef: entity.id, amount: txn.agreedAmount, set: { 'refund.status': 'PENDING', 'refund.amount': txn.agreedAmount, 'refund.requestedAt': new Date() } });
+    await refundService.completeRefund({ transactionId: txn._id, providerRefundId: entity.id, amountPaise: entity.amount });
+    return;
+  }
+  // e.g. RELEASED: the seller has already been paid — money must be recovered offline.
+  await paymentModel.updateOne({ _id: payment._id }, { $set: { status: PAYMENT_STATES.REFUNDED, reconciliationRequired: true, reconciliationReason: `Refunded at provider while escrow was ${txn.escrowStatus}` }, $push: { refunds: { providerRefundId: entity.id, amountPaise: entity.amount, status: 'processed' } } });
+  await transactionModel.updateOne({ _id: txn._id }, { $set: { escrowAttentionReason: `Buyer refunded at the provider (${entity.id}) while payment was ${txn.escrowStatus} — recover from seller / reconcile` } });
+  await notifyAdmins('PAYMENT_RECONCILIATION_REQUIRED', {
+    title: 'Refund processed after the seller was paid',
+    message: `₹${(entity.amount / 100).toLocaleString('en-IN')} was refunded to the buyer (${entity.id}) but the escrow was already ${txn.escrowStatus}. Recover or reconcile the seller payout.`,
+    entityType: 'transaction', entityId: txn._id, userId: payment.buyer,
+  });
 }
 
 // Admin-triggered refund — calls the real provider refund API (never a
@@ -299,27 +438,46 @@ async function handleWebhook({ rawBody, signature, payload }) {
 // transaction only actually flip to REFUNDED once the provider confirms
 // via the refund.processed webhook above; this just authorizes and starts
 // that process and records who did it.
-async function initiateAdminRefund({ paymentId, adminId, reason, req }) {
+async function initiateAdminRefund({ paymentId, adminId, reason, idempotencyKey = null, req }) {
   if (!mongoose.Types.ObjectId.isValid(paymentId)) throw new PaymentError('Invalid payment id', 404);
   const payment = await paymentModel.findOne({ _id: paymentId, is_deleted: deleteConstants.NOT_DELETED });
   if (!payment) throw new PaymentError('Payment not found', 404);
   if (![PAYMENT_STATES.SUCCESS, PAYMENT_STATES.PARTIALLY_REFUNDED].includes(payment.status)) {
     throw new PaymentError(`Cannot refund a payment in status ${payment.status}`, 409);
   }
-  if (payment.provider === 'manual') {
-    throw new PaymentError('Manual test payments have no real provider transaction to refund', 409);
+
+  const txn = await escrow.loadWithEscrow(payment.transaction);
+  const isOrphanCapture = payment.reconciliationRequired && txn && !ESCROW_TRANSITIONS.REQUEST_REFUND.from.includes(txn.escrowStatus);
+  if (!isOrphanCapture) {
+    // Normal case: the escrow refund flow (state machine, idempotent claim,
+    // completes only when the provider confirms).
+    const refundService = require('./refund.service');
+    await refundService.requestRefund({ transactionId: payment.transaction, actor: { type: ESCROW_ACTORS.ADMIN, id: adminId }, reason, idempotencyKey, req });
+    return paymentModel.findById(payment._id);
   }
 
-  const adapter = getPaymentAdapter();
-  const { providerRefundId, status } = await adapter.initiateRefund({
-    providerPaymentId: payment.providerPaymentId, amountPaise: payment.amountPaise, notes: { reason: reason || '' },
-  });
-
-  payment.refunds.push({ providerRefundId, amountPaise: payment.amountPaise, status: status || 'initiated', initiatedByAdminId: adminId });
-  payment.history.push({ action: 'REFUND_REQUESTED_BY_ADMIN', note: reason || '' });
-  await payment.save();
-  await createAuditLogAdmin({ req, adminId, action: auditLogConstants.REFUND_INITIATED, entity: 'payments', entityId: payment._id, metadata: { providerRefundId, reason } });
-  return payment;
+  // Orphan capture (money taken for an order that was already cancelled /
+  // paid by another attempt): refund this payment only. Atomic claim on the
+  // payment so a double-click cannot refund it twice.
+  if (payment.provider === 'manual') throw new PaymentError('Manual test payments have no real provider transaction to refund', 409);
+  const claimed = await paymentModel.findOneAndUpdate(
+    { _id: payment._id, status: { $in: [PAYMENT_STATES.SUCCESS, PAYMENT_STATES.PARTIALLY_REFUNDED] }, 'refunds.status': { $nin: ['initiated', 'pending', 'created'] } },
+    { $push: { refunds: { providerRefundId: '', amountPaise: payment.amountPaise, status: 'initiated', initiatedByAdminId: adminId }, history: { action: 'ORPHAN_REFUND_REQUESTED_BY_ADMIN', note: reason || '' } } },
+    { new: true }
+  );
+  if (!claimed) throw new PaymentError('A refund for this payment is already in progress', 409);
+  try {
+    const { providerRefundId, status } = await getPaymentAdapter().initiateRefund({
+      providerPaymentId: payment.providerPaymentId, amountPaise: payment.amountPaise,
+      receipt: `orf_${String(payment._id)}`, notes: { reason: String(reason || '').slice(0, 200) },
+    });
+    await paymentModel.updateOne({ _id: payment._id, 'refunds.status': 'initiated' }, { $set: { 'refunds.$.providerRefundId': providerRefundId, 'refunds.$.status': status || 'pending' } });
+    await createAuditLogAdmin({ req, adminId, action: auditLogConstants.REFUND_INITIATED, entity: 'payments', entityId: payment._id, metadata: { providerRefundId, reason, orphan: true } });
+  } catch (err) {
+    await paymentModel.updateOne({ _id: payment._id, 'refunds.status': 'initiated' }, { $set: { 'refunds.$.status': 'failed' } });
+    throw new PaymentError(`Refund failed at the payment provider: ${err.message}`, 502);
+  }
+  return paymentModel.findById(payment._id);
 }
 
 module.exports = { PaymentError, createPaymentOrder, createManualTestPayment, verifyPayment, handleWebhook, initiateAdminRefund };

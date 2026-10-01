@@ -30,6 +30,8 @@ const businessTypeModel = require('../../model/businessType.model');
 const materialCategoryModel = require('../../model/materialCategory.model');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { STORE_VERIFICATION_STATES } = require('../../constants/storeProfile.constants');
+const { notifyAdmins } = require('../admin/adminNotification.service');
+const { applyProfileImageChange } = require('../../helper/profileImage.helper');
 
 class RegisterError extends Error {
     constructor(message, statusCode = 400) {
@@ -96,7 +98,14 @@ authService.register = async (request) => {
     }
     if (body.password) body.password = await helper.createPassword(body.password);
     const builtLocation = body.location ? buildUserLocation(body.location) : undefined;
-    if (builtLocation) body.location = builtLocation;
+    if (builtLocation) {
+        body.location = builtLocation;
+        body.locationUpdatedAt = new Date();
+    }
+    // The store's own location when the client sent one; older clients
+    // only send `location`, which keeps the previous behaviour for them.
+    const builtStoreLocation = body.storeLocation ? buildUserLocation(body.storeLocation) : builtLocation;
+    delete body.storeLocation;
     // Neither registration form collects this anymore (BUILD MATERIAL
     // only operates in India for Buyer and Seller alike) — default it
     // rather than leaving it unset.
@@ -120,7 +129,7 @@ authService.register = async (request) => {
             seller: userData._id,
             storeName: body.storeName,
             businessType: body.businessTypeId,
-            location: builtLocation,
+            location: builtStoreLocation,
             address: body.storeAddress,
             addressMeta: body.addressMeta || undefined,
             categoryIds: body.categoryIds || [],
@@ -134,6 +143,12 @@ authService.register = async (request) => {
             history: [{ action: 'CREATED', note: 'Created at registration' }],
         });
         await createAuditLog({ req: request, userId: userData._id, action: auditLogConstants.STORE_PROFILE_CREATED, entity: 'store_profiles', entityId: store._id });
+        // Stores start UNVERIFIED — ops should review PAN/GST and location.
+        await notifyAdmins('STORE_REGISTERED', {
+            title: 'New business store registered',
+            message: `${store.storeName} (${[store.location?.city, store.location?.state].filter(Boolean).join(', ') || 'no location'}) signed up${store.gstRegistered ? ' · GST registered' : ''} and is awaiting verification.`,
+            entityType: 'store_profile', entityId: store._id, entityName: store.storeName, userId: userData._id,
+        });
     }
     const consentIds = [body.termsCondtions, body.privacyPolicy, body.cookiesPolicy
     ].filter(Boolean);
@@ -260,38 +275,38 @@ authService.update = async (request) => {
     const { body } = request;
     const { profilePicture, ...updateData } = body;
     const userData = await userModel.findOne({ _id: request?.auth?._id });
-    if ((userData.userType === userTypeConstants.Seller || userData.userType === userTypeConstants.Buyer) && profilePicture) {
-        const oldProfilePicture = userData.profilePicture || '';
-        const newProfilePicture = profilePicture;
-        const tempPath = path.join('public', 'tempUploads', newProfilePicture);
-        if (fs.existsSync(tempPath)) {
-            await helper.moveFileFromFolder(newProfilePicture, 'profile');
-            fs.unlink(tempPath, (err) => {
-                if (err) {
-                    logger.error(`Failed to delete temp profile picture image: ${err.message}`, {
-                        message: err.message,
-                        stack: err.stack
-                    });
-                }
-            });
-            if (oldProfilePicture && oldProfilePicture !== newProfilePicture) {
-                const oldProfilePicturePath = path.join('public', 'profile', oldProfilePicture);
-                if (fs.existsSync(oldProfilePicturePath)) {
-                    fs.unlink(oldProfilePicturePath, (err) => {
-                        if (err) {
-                            logger.error(`Failed to delete old profile picture image: ${err.message}`, {
-                                message: err.message,
-                                stack: err.stack
-                            });
-                        }
-                    });
-                }
-            }
-            updateData.profilePicture = newProfilePicture;
-        }
+    // New photo / replacement / removal ('' ) — see profileImage.helper.js
+    // for why the old inline version silently dropped every new photo.
+    const storedPicture = await applyProfileImageChange({ current: userData.profilePicture, next: profilePicture, folder: 'profile' });
+    if (storedPicture !== undefined) updateData.profilePicture = storedPicture;
+    let locationChange = null;
+    if (updateData.location) {
+        const next = buildUserLocation(updateData.location);
+        locationChange = { from: summarizeLocation(userData.location), to: summarizeLocation(next) };
+        updateData.location = next;
+        updateData.locationUpdatedAt = new Date();
     }
     await userModel.findByIdAndUpdate({ _id: request?.auth?._id }, { $set: updateData }, { new: true });
+    if (locationChange) {
+        // The admin user-detail "location history" is read from these
+        // entries (append-only audit collection) — no separate history
+        // collection to keep in sync.
+        await createAuditLog({
+            req: request, userId: request.auth._id, action: auditLogConstants.USER_LOCATION_UPDATED,
+            entity: 'users', entityId: request.auth._id, metadata: locationChange,
+        });
+    }
 };
+
+// Audit-friendly snapshot of a stored location (admin-only data).
+function summarizeLocation(location) {
+    if (!location) return null;
+    const coords = location.geo?.coordinates;
+    return {
+        city: location.city || '', state: location.state || '', pincode: location.pincode || '', area: location.area || '',
+        latitude: coords ? coords[1] : null, longitude: coords ? coords[0] : null,
+    };
+}
 authService.checkConsentUpdates = async (user) => {
     const latestConsents = await userConsentModel.find({
         status: statusConstants.active,

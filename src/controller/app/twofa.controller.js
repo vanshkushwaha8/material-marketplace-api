@@ -239,9 +239,20 @@ class TwofaController {
       next(err)
     }
   };
+  // Emails a fresh code to an email-method user who is already signed in
+  // (needed to regenerate recovery codes / disable 2FA). 60s cooldown.
+  sendAccountEmailCode = async (req, res, next) => {
+    try {
+      const result = await twofaService.sendAccountEmailCode(req.auth._id, otpModel);
+      return responseConstants.success(res, result.message, null, statusCodes.OK);
+    } catch (err) {
+      next(err);
+    }
+  };
+
   getStatus = async (req, res, next) => {
     try {
-      const result = await twofaService.getStatus(req.auth._id);
+      const result = await twofaService.getStatus(req.auth._id, userModel);
       return responseConstants.success(res, '2FA status retrieved.', result, statusCodes.OK);
     } catch (err) {
       next(err);

@@ -70,6 +70,8 @@ const configEnv = {
   PENDING_TOKEN_TTL_S: process.env.PENDING_TOKEN_TTL_S || '',
   SMTP_PORT: process.env.SMTP_PORT || '',
   FRONTEND_URL: process.env.FRONTEND_URL || '',
+  // Public site origin used for sitemap <loc> URLs (falls back to FRONTEND_URL).
+  SITE_URL: process.env.SITE_URL || '',
   BACKEND_URL_RESEND: process.env.BACKEND_URL_RESEND || '',
   STORAGE_PROVIDER: process.env.STORAGE_PROVIDER || 'local',
   AWS_REGION: process.env.AWS_REGION || '',
@@ -89,6 +91,8 @@ const configEnv = {
   PROJECT_IMAGE_MAX_COUNT: process.env.PROJECT_IMAGE_MAX_COUNT || '',
   PROJECT_IMAGE_MAX_SIZE_MB: process.env.PROJECT_IMAGE_MAX_SIZE_MB || '',
   MARKETPLACE_COMMISSION_PCT: process.env.MARKETPLACE_COMMISSION_PCT || '8.9',
+  // Accepted deals at/above this (₹) raise an admin "high-value deal" notification.
+  ADMIN_HIGH_VALUE_DEAL_INR: process.env.ADMIN_HIGH_VALUE_DEAL_INR || '500000',
 
   FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID || '',
   FIREBASE_CLIENT_EMAIL: process.env.FIREBASE_CLIENT_EMAIL || '',
@@ -101,6 +105,11 @@ const configEnv = {
   PAYMENT_KEY_ID: process.env.PAYMENT_KEY_ID || '',
   PAYMENT_KEY_SECRET: process.env.PAYMENT_KEY_SECRET || '',
   PAYMENT_WEBHOOK_SECRET: process.env.PAYMENT_WEBHOOK_SECRET || '',
+  // Optional: secret of a separate RazorpayX webhook for payout.* events.
+  PAYOUT_WEBHOOK_SECRET: process.env.PAYOUT_WEBHOOK_SECRET || '',
+  // Google Sign-In: OAuth client ID (type "Web application"). Google ID
+  // tokens must be issued for this audience. Unset = Google login disabled.
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
   PAYMENT_ACCOUNT_ID: process.env.PAYMENT_ACCOUNT_ID || '',
   PAYMENT_MODE: process.env.PAYMENT_MODE || 'test',
   // Dev/QA-only simulated payment success, bypassing the real gateway.
@@ -186,6 +195,11 @@ const configEnv = {
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
   COST_FACTOR: Number(process.env.COST_FACTOR) || 12,
+
+  // Optional Redis for the read cache (helper/cache.helper.js). Unset = the
+  // cache is disabled and every read goes straight to MongoDB.
+  REDIS_URL: process.env.REDIS_URL || '',
+  REDIS_KEY_PREFIX: process.env.REDIS_KEY_PREFIX || 'bm:',
 };
 
 module.exports = configEnv;

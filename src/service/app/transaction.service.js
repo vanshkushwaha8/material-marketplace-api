@@ -11,6 +11,11 @@ const { toPaise, fromPaise, calculateCommissionPaise } = require('../../helper/m
 const payoutService = require('./payout.service');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_TYPES } = require('../../constants/notification.constants');
+const { notifyAdmins } = require('../admin/adminNotification.service');
+const escrow = require('./escrow.service');
+const commissionService = require('./commission.service');
+const userModel = require('../../model/user.model');
+const { ESCROW_STATES, ESCROW_ACTORS, ESCROW_LABELS } = require('../../constants/escrow.constants');
 class TransactionError extends Error {
     constructor(message, statusCode = 400) {
         super(message);
@@ -36,10 +41,10 @@ async function getOwned(transactionId, userId) {
 
 // Centralized so 8.9% (or whatever it's changed to) is never hard-coded
 // at more than one call site — spec section "8.9% PLATFORM COMMISSION".
-function calculateCommission(amount) {
-    const pct = Number(configenv.MARKETPLACE_COMMISSION_PCT);
+async function calculateCommission(amount, sellerType) {
+    const { pct, settingId, sellerType: appliedType } = await commissionService.getApplicableCommission(sellerType);
     const { commissionAmountPaise, sellerSettlementPaise } = calculateCommissionPaise(toPaise(amount), pct);
-    return { pct, commission: fromPaise(commissionAmountPaise), settlement: fromPaise(sellerSettlementPaise) };
+    return { pct, settingId, sellerType: appliedType, commission: fromPaise(commissionAmountPaise), settlement: fromPaise(sellerSettlementPaise) };
 }
 
 // Called ONLY from payment.service.js — after the provider has verified
@@ -48,112 +53,194 @@ function calculateCommission(amount) {
 // under CORE INVENTORY MODEL. Idempotent: re-checks status before acting,
 // since payment.service.js may call this from both the callback and a
 // racing webhook for the same payment.
-async function markPaymentConfirmed({ transactionId, req }) {
-    const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
-    if (!txn) throw new TransactionError('Transaction not found', 404);
-    if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
-        return txn; // already confirmed by the other racing path — no-op
+//
+// Returns { txn, advanced }. `advanced` is true only for the ONE caller whose
+// conditional update actually moved PAYMENT_PENDING -> PAYMENT_CONFIRMED.
+// The previous read-check-save let a racing callback + webhook both pass the
+// status check, moving reserved->sold inventory twice.
+async function markPaymentConfirmed({ transactionId, providerPaymentId, req }) {
+    const current = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
+    if (!current) throw new TransactionError('Transaction not found', 404);
+    if (current.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
+        return { txn: current, advanced: false };
     }
+
+    // Financial lock: the commission that applies to THIS seller's type
+    // right now is stored on the transaction (rate + the exact admin
+    // setting version). Later admin changes never alter it.
+    const seller = await userModel.findById(current.seller).select('sellerType').lean();
+    const c = await calculateCommission(current.agreedAmount, seller?.sellerType);
+    const now = new Date();
+
+    let paid;
+    try {
+        // Order status and escrow state move together, atomically, and only
+        // from PAYMENT_PENDING — a capture for a cancelled/expired order or a
+        // second capture for an already-paid one cannot apply.
+        paid = await escrow.transition({
+            transactionId: current._id, action: 'PAYMENT_CAPTURED', actor: { type: ESCROW_ACTORS.PROVIDER },
+            providerRef: providerPaymentId || '', amount: current.agreedAmount,
+            where: { status: TRANSACTION_STATES.PAYMENT_PENDING, is_deleted: deleteConstants.NOT_DELETED },
+            set: {
+                status: TRANSACTION_STATES.PAYMENT_CONFIRMED,
+                paymentConfirmedAt: now,
+                platformCommissionPct: c.pct,
+                platformCommissionAmount: c.commission,
+                sellerSettlementAmount: c.settlement,
+                commissionSellerType: c.sellerType,
+                commissionSetting: c.settingId,
+                commissionLockedAt: now,
+                commissionStatus: COMMISSION_STATES.COLLECTED,
+                settlementStatus: SETTLEMENT_STATES.ON_HOLD,
+            },
+            push: { history: { action: 'PAYMENT_CONFIRMED', by: 'system' } },
+            req,
+        });
+    } catch (err) {
+        if (err instanceof escrow.EscrowTransitionError) return { txn: await transactionModel.findById(current._id), advanced: false };
+        throw err;
+    }
+    if (!paid.applied) return { txn: await transactionModel.findById(current._id), advanced: false };
+
+    // Money is never treated as the seller's on capture: it is HELD until
+    // delivery + buyer confirmation.
+    await escrow.transition({
+        transactionId: current._id, action: 'HOLD', actor: { type: ESCROW_ACTORS.SYSTEM },
+        reason: 'Held until the seller delivers and the buyer confirms receipt', amount: current.agreedAmount, req,
+    });
+    const txn = await transactionModel.findById(current._id);
 
     await materialListingModel.updateOne(
         { _id: txn.listing },
         { $inc: { reservedQuantity: -txn.agreedQuantity, soldQuantity: txn.agreedQuantity } }
     );
     await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.INVENTORY_SOLD, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
+    await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'transactions', entityId: txn._id, metadata: { commissionPct: c.pct, commission: c.commission, settlement: c.settlement, sellerType: c.sellerType } });
+    return { txn, advanced: true };
+}
 
-    // Commission rate/amount is snapshotted HERE — when the buyer's payment
-    // is actually confirmed, i.e. the moment the transaction becomes
-    // financially committed (spec "COMMISSION RATE SNAPSHOT") — not later at
-    // buyer-confirmation/completion. A platform rate change between payment
-    // and handover/completion must never retroactively change what this
-    // specific transaction owes.
-    const { pct, commission, settlement } = calculateCommission(txn.agreedAmount);
-    txn.platformCommissionPct = pct;
-    txn.platformCommissionAmount = commission;
-    txn.sellerSettlementAmount = settlement;
-    txn.commissionStatus = COMMISSION_STATES.COLLECTED;
-
-    txn.status = TRANSACTION_STATES.PAYMENT_CONFIRMED;
-    txn.paymentConfirmedAt = new Date();
-    txn.history.push({ action: 'PAYMENT_CONFIRMED', by: 'system' });
-    await txn.save();
-    await createAuditLog({ req, userId: txn.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'transactions', entityId: txn._id, metadata: { commission, settlement } });
+// Atomically cancels a still-unpaid transaction and returns its reserved
+// units to available stock. Status flips FIRST (conditionally) so a payment
+// confirmation racing this can never also consume the same reservation —
+// whichever conditional update wins decides where the units go.
+async function releaseUnpaidReservation(transactionId, { action, by }) {
+    let result;
+    try {
+        result = await escrow.transition({
+            transactionId, action: 'CANCEL_UNPAID', actor: { type: by === 'system' ? ESCROW_ACTORS.SYSTEM : ESCROW_ACTORS.BUYER },
+            reason: action,
+            where: { status: TRANSACTION_STATES.PAYMENT_PENDING },
+            set: { status: TRANSACTION_STATES.CANCELLED },
+            push: { history: { action, by } },
+        });
+    } catch (err) {
+        if (err instanceof escrow.EscrowTransitionError) return null; // paid / already closed meanwhile
+        throw err;
+    }
+    if (!result.applied) return null;
+    const txn = result.txn;
+    await materialListingModel.updateOne(
+        { _id: txn.listing },
+        { $inc: { availableQuantity: txn.agreedQuantity, reservedQuantity: -txn.agreedQuantity } }
+    );
+    await materialListingModel.updateOne(
+        { _id: txn.listing, status: LISTING_STATES.SOLD_OUT, availableQuantity: { $gt: 0 } },
+        { $set: { status: LISTING_STATES.LIVE } }
+    );
     return txn;
 }
 
 async function markHandover({ transactionId, userId, note, evidence, req }) {
     const { txn, role } = await getOwned(transactionId, userId);
     if (role !== 'seller') throw new TransactionError('Only the seller can start handover', 403);
-    if (txn.status !== TRANSACTION_STATES.PAYMENT_CONFIRMED) {
+    if (![TRANSACTION_STATES.PAYMENT_CONFIRMED, TRANSACTION_STATES.READY_FOR_HANDOVER, TRANSACTION_STATES.HANDOVER_STARTED].includes(txn.status)) {
         throw new TransactionError(`Cannot start handover from status ${txn.status}`, 409);
     }
-    txn.status = TRANSACTION_STATES.HANDOVER_STARTED;
-    txn.handoverStartedAt = new Date();
-    if (note) txn.handoverNote = note;
-    if (Array.isArray(evidence) && evidence.length) txn.handoverEvidence = evidence;
-    txn.history.push({ action: 'HANDOVER_STARTED', by: 'seller' });
-    await txn.save();
-    await createAuditLog({ req, userId, action: auditLogConstants.HANDOVER_STARTED, entity: 'transactions', entityId: txn._id, metadata: { evidenceCount: txn.handoverEvidence.length } });
-    await txn.populate('listing', 'title');
-    await notificationService.createNotification({
-        recipientId: txn.buyer, actorId: userId, type: NOTIFICATION_TYPES.HANDOVER_STARTED,
-        title: 'Material handed over',
-        message: (actorName) => `${actorName || 'The seller'} marked "${txn.listing?.title || 'the material'}" as handed over — please confirm receipt`,
-        entityType: 'transaction', entityId: txn._id, entityName: txn.listing?.title || null,
+    // HELD → DELIVERED. The payment stays protected: delivery alone never
+    // releases money — the buyer's confirmation does.
+    const set = { status: TRANSACTION_STATES.HANDOVER_STARTED, handoverStartedAt: new Date() };
+    if (note) set.handoverNote = note;
+    if (Array.isArray(evidence) && evidence.length) set.handoverEvidence = evidence;
+    const result = await escrow.transition({
+        transactionId: txn._id, action: 'MARK_DELIVERED', actor: { type: ESCROW_ACTORS.SELLER, id: userId },
+        reason: note || '', set, where: { status: { $in: [TRANSACTION_STATES.PAYMENT_CONFIRMED, TRANSACTION_STATES.READY_FOR_HANDOVER] } },
+        push: { history: { action: 'HANDOVER_STARTED', by: 'seller' } }, req,
     });
-    return txn;
+    const updated = await transactionModel.findById(txn._id);
+    if (!result.applied) return updated; // duplicate request — already delivered, no second notification
+
+    await createAuditLog({ req, userId, action: auditLogConstants.HANDOVER_STARTED, entity: 'transactions', entityId: updated._id, metadata: { evidenceCount: updated.handoverEvidence.length } });
+    await updated.populate('listing', 'title');
+    await notificationService.createNotification({
+        recipientId: updated.buyer, actorId: userId, type: NOTIFICATION_TYPES.HANDOVER_STARTED,
+        title: 'Material handed over',
+        message: (actorName) => `${actorName || 'The seller'} marked "${updated.listing?.title || 'the material'}" as delivered — your payment stays held until you confirm receipt`,
+        entityType: 'transaction', entityId: updated._id, entityName: updated.listing?.title || null,
+    });
+    return updated;
 }
 
 async function confirmReceipt({ transactionId, userId, req }) {
     const { txn, role } = await getOwned(transactionId, userId);
     if (role !== 'buyer') throw new TransactionError('Only the buyer can confirm receipt', 403);
-    if (txn.status !== TRANSACTION_STATES.HANDOVER_STARTED) {
+    if (![TRANSACTION_STATES.HANDOVER_STARTED, TRANSACTION_STATES.COMPLETED].includes(txn.status)) {
         throw new TransactionError(`Cannot confirm receipt from status ${txn.status}`, 409);
     }
-    // Commission/settlement were already snapshotted at payment-confirmation
-    // time (markPaymentConfirmed above) — completion just uses those frozen
-    // values rather than recomputing against whatever the platform rate
-    // happens to be right now.
-    txn.buyerConfirmedAt = new Date();
-    txn.completedAt = new Date();
-    txn.status = TRANSACTION_STATES.COMPLETED;
-    // Not RELEASED yet — release now waits on payout eligibility and an
-    // actual successful payout (payout.service.js#markPayoutPaid sets this).
-    txn.settlementStatus = SETTLEMENT_STATES.PENDING;
-    txn.history.push({ action: 'BUYER_CONFIRMED', by: 'buyer' }, { action: 'COMPLETED', by: 'system' });
-    await txn.save();
-    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_COMPLETED, entity: 'transactions', entityId: txn._id, metadata: { commission: txn.platformCommissionAmount, settlement: txn.sellerSettlementAmount } });
-    await txn.populate('listing', 'title');
+    const now = new Date();
+    const result = await escrow.transition({
+        transactionId: txn._id, action: 'BUYER_CONFIRM', actor: { type: ESCROW_ACTORS.BUYER, id: userId },
+        where: { status: TRANSACTION_STATES.HANDOVER_STARTED },
+        set: { status: TRANSACTION_STATES.COMPLETED, buyerConfirmedAt: now, completedAt: now, settlementStatus: SETTLEMENT_STATES.PENDING },
+        push: { history: { $each: [{ action: 'BUYER_CONFIRMED', by: 'buyer' }, { action: 'COMPLETED', by: 'system' }] } },
+        req,
+    });
+    const updated = await transactionModel.findById(txn._id);
+    if (!result.applied) return updated; // duplicate confirmation — already processed once
+
+    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_COMPLETED, entity: 'transactions', entityId: updated._id, metadata: { commission: updated.platformCommissionAmount, settlement: updated.sellerSettlementAmount } });
+    await updated.populate('listing', 'title');
     await notificationService.createNotification({
-        recipientId: txn.seller,
+        recipientId: updated.seller,
         actorId: userId,
         type: NOTIFICATION_TYPES.RECEIPT_CONFIRMED,
         title: 'Receipt confirmed',
-        message: (actorName) => `${actorName || 'The buyer'} confirmed receipt of "${txn.listing?.title || 'the material'}" — your payout is being processed`,
+        message: (actorName) => `${actorName || 'The buyer'} confirmed receipt of "${updated.listing?.title || 'the material'}" — your payment is being released`,
         entityType: 'transaction',
-        entityId: txn._id,
-        entityName: txn.listing?.title || null,
+        entityId: updated._id,
+        entityName: updated.listing?.title || null,
     });
 
-    // Update linked project progress.
-    // Project-linking failure must never block transaction completion.
-    if (txn.project) {
+    if (updated.project) {
         const projectService = require('./project.service');
-
-        await projectService
-            .markMaterialSourced({
-                projectId: txn.project,
-                buyerId: txn.buyer,
-                count: 1,
-            })
-            .catch(() => { });
+        await projectService.markMaterialSourced({ projectId: updated.project, buyerId: updated.buyer, count: 1 }).catch(() => { });
     }
 
-    await payoutService.evaluateAndInitiatePayout({
-        transactionId: txn._id,
-        req,
-    });
-    return txn;
+    await settleConfirmedTransaction({ transactionId: updated._id, actor: { type: ESCROW_ACTORS.SYSTEM }, req });
+    return transactionModel.findById(updated._id);
+}
+
+// BUYER_CONFIRMED (or admin-approved) → COMMISSION_DEDUCTED → RELEASE_PENDING
+// → payout. Amounts were locked at capture time; nothing is recalculated
+// here from current rates or from anything the client sent.
+async function settleConfirmedTransaction({ transactionId, actor, reason = '', req }) {
+    const txn = await escrow.loadWithEscrow(transactionId);
+    if (txn.escrowStatus === ESCROW_STATES.BUYER_CONFIRMED) {
+        await escrow.transition({
+            transactionId, action: 'DEDUCT_COMMISSION', actor, req,
+            amount: txn.platformCommissionAmount,
+            reason: `${txn.platformCommissionPct}% commission (${txn.commissionSellerType || 'INDIVIDUAL'}) — seller receives ₹${txn.sellerSettlementAmount}`,
+            set: { commissionDeductedAt: new Date() },
+        });
+    }
+    const afterDeduct = await escrow.loadWithEscrow(transactionId);
+    if (afterDeduct.escrowStatus === ESCROW_STATES.COMMISSION_DEDUCTED) {
+        await escrow.transition({
+            transactionId, action: 'QUEUE_RELEASE', actor, reason, req,
+            amount: afterDeduct.sellerSettlementAmount,
+            set: { releaseRequestedAt: new Date(), settlementStatus: SETTLEMENT_STATES.PENDING },
+        });
+    }
+    return payoutService.evaluateAndInitiatePayout({ transactionId, req });
 }
 
 // Lets a buyer release inventory early instead of waiting out the full
@@ -167,20 +254,36 @@ async function cancelTransaction({ transactionId, userId, req }) {
     if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
         throw new TransactionError(`Cannot cancel a transaction in status ${txn.status}`, 409);
     }
-    await materialListingModel.updateOne(
-        { _id: txn.listing },
-        { $inc: { availableQuantity: txn.agreedQuantity, reservedQuantity: -txn.agreedQuantity } }
-    );
-    await materialListingModel.updateOne(
-        { _id: txn.listing, status: LISTING_STATES.SOLD_OUT, availableQuantity: { $gt: 0 } },
-        { $set: { status: LISTING_STATES.LIVE } }
-    );
-    txn.status = TRANSACTION_STATES.CANCELLED;
-    txn.history.push({ action: 'CANCELLED', by: 'buyer' });
-    await txn.save();
-    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_CANCELLED, entity: 'transactions', entityId: txn._id });
-    await createAuditLog({ req, userId, action: auditLogConstants.INVENTORY_RELEASED, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
-    return txn;
+    // A payment order the buyer may still be completing in another tab
+    // would otherwise be captured against a cancelled transaction.
+    if (await hasRecentActivePayment(txn._id)) {
+        throw new TransactionError('A payment for this transaction is in progress — wait for it to finish before cancelling', 409);
+    }
+    const cancelled = await releaseUnpaidReservation(txn._id, { action: 'CANCELLED', by: 'buyer' });
+    if (!cancelled) {
+        throw new TransactionError('This transaction was just paid or updated — refresh to see its current status', 409);
+    }
+    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_CANCELLED, entity: 'transactions', entityId: cancelled._id });
+    await createAuditLog({ req, userId, action: auditLogConstants.INVENTORY_RELEASED, entity: 'material_listings', entityId: cancelled.listing, metadata: { transactionId: cancelled._id, quantity: cancelled.agreedQuantity } });
+    return cancelled;
+}
+
+// How long an open provider order protects its transaction from reservation
+// expiry / buyer cancellation — covers a buyer who is mid-checkout (UPI
+// collect, OTP pages) when the reservation window runs out.
+const ACTIVE_PAYMENT_GRACE_MS = 30 * 60 * 1000;
+
+async function hasRecentActivePayment(transactionId) {
+    // Lazy require — payment.model has no dependency back on this service,
+    // but keeping it local mirrors the project.service lazy require below.
+    const paymentModel = require('../../model/payment.model');
+    const { PAYMENT_STATES } = require('../../constants/payment.constants');
+    return Boolean(await paymentModel.exists({
+        transaction: transactionId,
+        status: { $in: [PAYMENT_STATES.CREATED, PAYMENT_STATES.PENDING, PAYMENT_STATES.PROCESSING] },
+        createdAt: { $gt: new Date(Date.now() - ACTIVE_PAYMENT_GRACE_MS) },
+        is_deleted: deleteConstants.NOT_DELETED,
+    }));
 }
 
 // Admin-only resolution of a raised dispute. Never fabricates a payment or
@@ -190,39 +293,15 @@ async function cancelTransaction({ transactionId, userId, req }) {
 // admin-initiated-refund flow (payment.service.js#initiateAdminRefund),
 // this only unblocks/records the transaction-side outcome.
 async function resolveDispute({ transactionId, adminId, resolution, note, req }) {
-    if (!mongoose.Types.ObjectId.isValid(transactionId)) throw new TransactionError('Invalid transaction id', 404);
-    const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
-    if (!txn) throw new TransactionError('Transaction not found', 404);
-    if (txn.status !== TRANSACTION_STATES.DISPUTED) {
-        throw new TransactionError(`Transaction is not under dispute (status ${txn.status})`, 409);
-    }
+    // Kept for the existing admin endpoint; the actual work (refund through
+    // the provider, or commission + release) is the admin escrow service.
     if (!['RELEASE', 'REFUND'].includes(resolution)) throw new TransactionError('resolution must be RELEASE or REFUND', 400);
-
-    txn.disputed = false;
-    if (resolution === 'RELEASE') {
-        // Back to the state it was in before the dispute interrupted it —
-        // buyer had already confirmed receipt if commission/settlement were
-        // already snapshotted (payment was confirmed), otherwise back to
-        // awaiting handover.
-        txn.status = txn.completedAt ? TRANSACTION_STATES.COMPLETED : TRANSACTION_STATES.HANDOVER_STARTED;
-        txn.settlementStatus = SETTLEMENT_STATES.PENDING;
-        txn.history.push({ action: 'DISPUTE_RESOLVED', by: 'admin', note: `RELEASE — ${note || ''}` });
-        await txn.save();
-        await createAuditLogAdmin({ req, adminId, action: auditLogConstants.DISPUTE_RESOLVED, entity: 'transactions', entityId: txn._id, metadata: { resolution, note } });
-        if (txn.status === TRANSACTION_STATES.COMPLETED) {
-            await payoutService.evaluateAndInitiatePayout({ transactionId: txn._id, req });
-        }
-    } else {
-        // REFUND: settlement stays on hold — an admin must separately call the
-        // real provider refund endpoint; this just records the resolution and
-        // keeps the transaction out of DISPUTED limbo (still not eligible for
-        // payout since it's now on its way to REFUNDED via the refund webhook).
-        txn.settlementStatus = SETTLEMENT_STATES.ON_HOLD;
-        txn.history.push({ action: 'DISPUTE_RESOLVED', by: 'admin', note: `REFUND — ${note || ''}` });
-        await txn.save();
-        await createAuditLogAdmin({ req, adminId, action: auditLogConstants.DISPUTE_RESOLVED, entity: 'transactions', entityId: txn._id, metadata: { resolution, note } });
-    }
-    return txn;
+    const adminEscrow = require('../admin/escrow.service');
+    const result = await adminEscrow.performAction({
+        transactionId, action: resolution === 'RELEASE' ? 'APPROVE_RELEASE' : 'REFUND',
+        reason: note || `Dispute resolved: ${resolution}`, adminId, req,
+    });
+    return result.transaction;
 }
 
 async function raiseDispute({ transactionId, userId, reason, req }) {
@@ -230,33 +309,71 @@ async function raiseDispute({ transactionId, userId, reason, req }) {
     if (TRANSACTION_TERMINAL_STATES.includes(txn.status)) {
         throw new TransactionError(`This transaction is already ${txn.status.toLowerCase()}`, 409);
     }
-    txn.disputed = true;
-    txn.disputeReason = reason;
-    txn.status = TRANSACTION_STATES.DISPUTED;
-    txn.settlementStatus = SETTLEMENT_STATES.ON_HOLD;
-    txn.history.push({ action: 'DISPUTED', by: role, note: reason });
-    await txn.save();
-    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_DISPUTED, entity: 'transactions', entityId: txn._id });
-    const otherParty = role === 'buyer' ? txn.seller : txn.buyer;
+    if (txn.status === TRANSACTION_STATES.PAYMENT_PENDING) {
+        throw new TransactionError('Nothing has been paid yet — cancel the order instead of raising a dispute', 409);
+    }
+    // PAID / HELD / DELIVERED → DISPUTED: the payment stays held and cannot
+    // be released until an admin reviews it.
+    const result = await escrow.transition({
+        transactionId: txn._id, action: 'RAISE_DISPUTE', actor: { type: role === 'buyer' ? ESCROW_ACTORS.BUYER : ESCROW_ACTORS.SELLER, id: userId },
+        reason,
+        set: { status: TRANSACTION_STATES.DISPUTED, disputed: true, disputeReason: reason, settlementStatus: SETTLEMENT_STATES.ON_HOLD },
+        push: { history: { action: 'DISPUTED', by: role, note: reason } }, req,
+    });
+    const updated = await transactionModel.findById(txn._id);
+    if (!result.applied) return updated;
+
+    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_DISPUTED, entity: 'transactions', entityId: updated._id });
+    await notifyAdmins('TRANSACTION_DISPUTED', {
+        title: `Dispute raised by the ${role}`,
+        message: `₹${Number(updated.agreedAmount).toLocaleString('en-IN')} transaction (${updated.agreedQuantity} units) is on hold: "${String(reason || '').slice(0, 200)}"`,
+        entityType: 'transaction', entityId: updated._id, userId,
+        metadata: { raisedBy: role },
+    });
+    const otherParty = role === 'buyer' ? updated.seller : updated.buyer;
     await notificationService.createNotification({
         recipientId: otherParty, actorId: userId, type: NOTIFICATION_TYPES.TRANSACTION_DISPUTED,
         title: 'Dispute raised',
         message: (actorName) => `${actorName || 'The other party'} raised a dispute: ${reason}`,
-        entityType: 'transaction', entityId: txn._id,
+        entityType: 'transaction', entityId: updated._id,
     });
-    return txn;
+    return updated;
 }
 
 async function getOne({ transactionId, userId }) {
     const { txn } = await getOwned(transactionId, userId);
-    await txn.populate('listing', 'title images unit');
-    // Both parties land on the same detail page (buyer and seller routes
-    // share this — see TransactionDetail.jsx), so both names are populated
-    // regardless of which side is viewing, same as myTransactions() already
-    // does for the counterparty in the list view.
-    await txn.populate('buyer', 'fullName');
-    await txn.populate('seller', 'fullName sellerType');
-    return txn;
+    await escrow.loadWithEscrow(txn._id); // backfills legacy rows once
+    const fresh = await transactionModel.findById(txn._id);
+    await fresh.populate('listing', 'title images unit');
+    await fresh.populate('buyer', 'fullName');
+    await fresh.populate('seller', 'fullName sellerType');
+    const payout = await require('../../model/payout.model').findOne({ transaction: fresh._id }).select('status netPayoutAmount processedAt failureReason').lean();
+    return toPartyView(fresh.toObject(), payout);
+}
+
+// Buyer/seller view of a transaction: the escrow state and its timeline,
+// without admin identities or internal reconciliation notes.
+function toPartyView(txn, payout) {
+    const { escrowHistory = [], refund = {}, ...rest } = txn;
+    return {
+        ...rest,
+        escrow: {
+            status: txn.escrowStatus,
+            label: ESCROW_LABELS[txn.escrowStatus] || txn.escrowStatus,
+            commissionPct: txn.platformCommissionPct,
+            commissionAmount: txn.platformCommissionAmount,
+            sellerSettlementAmount: txn.sellerSettlementAmount,
+            sellerType: txn.commissionSellerType,
+            releasedAt: txn.releasedAt,
+            refund: refund && refund.status !== 'NONE'
+                ? { status: refund.status, amount: refund.amount, requestedAt: refund.requestedAt, completedAt: refund.completedAt }
+                : null,
+            payout: payout ? { status: payout.status, netPayoutAmount: payout.netPayoutAmount, processedAt: payout.processedAt } : null,
+            timeline: escrowHistory
+                .filter((e) => e.action !== 'BACKFILL')
+                .map((e) => ({ from: e.from, to: e.to, label: ESCROW_LABELS[e.to] || e.to, action: e.action, by: e.actorType, at: e.at })),
+        },
+    };
 }
 
 async function myTransactions({ userId, role, status, page = 1, limit = 20 }) {
@@ -274,7 +391,9 @@ async function myTransactions({ userId, role, status, page = 1, limit = 20 }) {
         transactionModel.find(query).populate('listing', 'title images unit location').populate(counterpartyField, 'fullName').sort({ updatedAt: -1 }).skip((pageNum - 1) * pageLimit).limit(pageLimit).lean(),
         transactionModel.countDocuments(query),
     ]);
-    return { getData, count, page: pageNum, limit: pageLimit };
+    // Same party view as getOne: escrow status/label, no admin ids or ledger internals.
+    const rows = getData.map((t) => toPartyView(t.escrowStatus ? t : { ...t, escrowStatus: escrow.deriveLegacyEscrowStatus(t, null) }, null));
+    return { getData: rows, count, page: pageNum, limit: pageLimit };
 }
 
 // Reserved inventory that never got paid for within the reservation
@@ -284,26 +403,22 @@ async function expireStaleReservations() {
     const stale = await transactionModel.find({
         status: TRANSACTION_STATES.PAYMENT_PENDING,
         reservationExpiresAt: { $lt: new Date() },
-    });
-    for (const txn of stale) {
-        await materialListingModel.updateOne(
-            { _id: txn.listing },
-            { $inc: { availableQuantity: txn.agreedQuantity, reservedQuantity: -txn.agreedQuantity } }
-        );
-        await materialListingModel.updateOne(
-            { _id: txn.listing, status: LISTING_STATES.SOLD_OUT, availableQuantity: { $gt: 0 } },
-            { $set: { status: LISTING_STATES.LIVE } }
-        );
-        txn.status = TRANSACTION_STATES.CANCELLED;
-        txn.history.push({ action: 'RESERVATION_EXPIRED', by: 'system' });
-        await txn.save();
+    }).select('_id');
+    let released = 0;
+    for (const { _id } of stale) {
+        // Skip (retry next sweep) while the buyer is still inside checkout.
+        if (await hasRecentActivePayment(_id)) continue;
+        const txn = await releaseUnpaidReservation(_id, { action: 'RESERVATION_EXPIRED', by: 'system' });
+        if (!txn) continue; // paid/cancelled between the find and now
+        released += 1;
         await createAuditLog({ userId: txn.buyer, action: auditLogConstants.RESERVATION_EXPIRED, entity: 'transactions', entityId: txn._id });
         await createAuditLog({ userId: txn.buyer, action: auditLogConstants.INVENTORY_RELEASED, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
     }
-    return { released: stale.length };
+    return { released };
 }
 
 module.exports = {
     TransactionError, calculateCommission, markPaymentConfirmed, markHandover,
-    confirmReceipt, cancelTransaction, resolveDispute, raiseDispute, getOne, myTransactions, expireStaleReservations,
+    confirmReceipt, settleConfirmedTransaction, toPartyView,
+    cancelTransaction, resolveDispute, raiseDispute, getOne, myTransactions, expireStaleReservations,
 };

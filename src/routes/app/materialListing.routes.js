@@ -1,7 +1,7 @@
 const express = require('express');
 const materialListingController = require('../../controller/app/materialListing.controller');
 const userTypeConstants = require("../../constants/usertype.constants");
-const { authMiddleware, twoFactorAuthenticationCheck } = require("../../middleware/auth.middleware");
+const { authMiddleware, twoFactorAuthenticationCheck, softAuthMiddleware } = require("../../middleware/auth.middleware");
 const { authapiLimiter } = require("../../utils/rateLimiter.utils");
 const router = express.Router();
 
@@ -12,7 +12,9 @@ const sellerAuth = [
 
 // Public browse/search/detail — no auth required.
 router.get('/material-listings', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), materialListingController.search);
-router.get('/material-listings/:id', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), materialListingController.getOne);
+// softAuth: still public, but lets getOne recognise the owner / a buyer
+// with an offer on it when the listing isn't publicly visible.
+router.get('/material-listings/:id', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), softAuthMiddleware, materialListingController.getOne);
 
 // Seller-only management.
 router.get('/seller/material-listings', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...sellerAuth, materialListingController.myListings);

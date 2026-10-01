@@ -16,6 +16,7 @@ jest.mock('../model/storeProfile.model', () => ({}));
 jest.mock('../validation/app/materialSpecs.validation', () => ({ validateSpecifications: jest.fn(), mergeSpecFieldDefs: jest.fn() }));
 jest.mock('../helper/helper', () => ({}));
 jest.mock('../helper/audit.helper', () => ({ createAuditLog: jest.fn().mockResolvedValue(undefined) }));
+jest.mock('../service/admin/adminNotification.service', () => ({ notifyAdmins: jest.fn() }));
 
 const { resolveSupplyType, MaterialListingError } = require('../service/app/materialListing.service');
 const { SUPPLY_TYPES } = require('../constants/materialListing.constants');

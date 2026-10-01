@@ -14,6 +14,8 @@ const transactionHistoryRoutes = require('./TransactionHistory.routes');
 const paymentHistoryRoutes = require('./Payment.routes');
 const commissionHistoryRoutes = require('./Commission.routes');
 const settlementHistoryRoutes = require('./Settlement.routes');
+const userRoutes = require('./User.routes');
+const adminNotificationRoutes = require('./AdminNotification.routes');
 const adminRouter = express.Router();
 adminRouter.use('/', authRoutes);
 adminRouter.use('/', userConsentRoutes);
@@ -29,5 +31,9 @@ adminRouter.use('/', transactionHistoryRoutes);
 adminRouter.use('/', paymentHistoryRoutes);
 adminRouter.use('/', commissionHistoryRoutes);
 adminRouter.use('/', settlementHistoryRoutes);
+adminRouter.use('/', userRoutes);
+adminRouter.use('/', adminNotificationRoutes);
+adminRouter.use('/', require('./Review.routes'));
+adminRouter.use('/', require('./Escrow.routes'));
 
 module.exports = adminRouter;

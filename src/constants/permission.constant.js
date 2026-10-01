@@ -218,6 +218,18 @@ const PERMISSIONSCONSTANTS = {
         MATERIAL_LISTING_VIEW: 'manageMaterialListingView',
         MATERIAL_LISTING_MODERATE: 'manageMaterialListingModerate',
     },
+    // Marketplace user management (buyers + sellers). Like every other
+    // permission here, sub-admins only get these once a matching permission
+    // row is created under Settings → Modules/Permissions and assigned to
+    // their role; super-admins bypass the check.
+    USERMANAGEMENT: {
+        USER_VIEW: 'manageUsersView',
+        USER_STATUS_CHANGE: 'manageUsersStatusChange',
+    },
+    RATINGMANAGEMENT: {
+        RATING_VIEW: 'manageRatingsView',
+        RATING_MODERATE: 'manageRatingsModerate',
+    },
     TRANSACTIONHISTORY: {
         TRANSACTION_HISTORY_VIEW: 'manageTransactionHistoryView',
         PAYMENT_HISTORY_VIEW: 'managePaymentHistoryView',
@@ -225,6 +237,13 @@ const PERMISSIONSCONSTANTS = {
         SETTLEMENT_HISTORY_VIEW: 'manageSettlementHistoryView',
         REFUND_MANAGE: 'manageRefund',
         DISPUTE_MANAGE: 'manageDispute',
+    },
+    // Escrow / payment recovery and commission configuration.
+    PAYMENTCONTROL: {
+        ESCROW_ACTION: 'managePaymentActions',            // retry release/refund, approve release, refresh provider status
+        MANUAL_RESOLUTION: 'managePaymentManualResolution', // mark released/refunded with an external reference
+        COMMISSION_VIEW: 'manageCommissionSettingsView',
+        COMMISSION_MANAGE: 'manageCommissionSettings',
     },
 };
 module.exports = PERMISSIONSCONSTANTS

@@ -1,4 +1,5 @@
 const Joi = require("joi");
+const { OFFER_STATES } = require('../../constants/offer.constants');
 
 const objectId = () =>
   Joi.string()
@@ -55,6 +56,19 @@ class offerValidation {
         .max(500)
         .allow(''),
     });
+  }
+
+  static list() {
+    return Joi.object({
+      view: Joi.string().valid('action', 'waiting', 'accepted', 'closed').empty(''),
+      status: Joi.string().valid(...Object.values(OFFER_STATES)).empty(''),
+      page: Joi.number().integer().min(1).default(1),
+      limit: Joi.number().integer().min(1).max(100).default(20),
+    });
+  }
+
+  static ValidateList(query) {
+    return this.list().validate(query, { abortEarly: false, stripUnknown: true });
   }
 
   static ValidateCreate(data) {

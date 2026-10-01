@@ -31,7 +31,7 @@ async function linkBankAccount({ sellerId, body, req }) {
         seller: sellerId, accountHolderName: body.accountHolderName, bankName: body.bankName,
         accountNumberLast4: body.accountNumber.slice(-4), ifsc: body.ifsc,
         provider: configenv.PAYOUT_PROVIDER || 'manual', providerContactId, providerFundAccountId,
-        verificationStatus: BANK_ACCOUNT_STATES.PENDING, verificationMethod: '', verifiedAt: null, failureReason: '',
+        verificationStatus: BANK_ACCOUNT_STATES.PENDING, verificationMethod: '', verifiedAt: null, failureReason: '', providerValidationId: null,
       },
       $push: { history: { action: 'LINKED', note: `Bank: ${body.bankName}` } },
     },
@@ -46,14 +46,28 @@ async function verifyBankAccount({ sellerId, req }) {
   if (!account) throw new BankAccountError('No bank account linked', 404);
   if (account.verificationStatus === BANK_ACCOUNT_STATES.DISABLED) throw new BankAccountError('This bank account has been disabled', 409);
 
+  if (account.verificationStatus === BANK_ACCOUNT_STATES.VERIFIED) return account;
+
   const adapter = getPayoutAdapter();
   try {
-    const { status, method } = await adapter.validateFundAccount({ providerFundAccountId: account.providerFundAccountId });
-    const verified = ['completed', 'active'].includes(String(status).toLowerCase());
-    account.verificationStatus = verified ? BANK_ACCOUNT_STATES.VERIFIED : BANK_ACCOUNT_STATES.FAILED;
+    // Re-read an in-flight penny drop rather than starting a second one.
+    const { status, method, validationId } = account.providerValidationId && account.verificationStatus === BANK_ACCOUNT_STATES.PENDING
+      ? await adapter.fetchFundAccountValidation(account.providerValidationId)
+      : await adapter.validateFundAccount({ providerFundAccountId: account.providerFundAccountId });
+
+    account.providerValidationId = validationId || account.providerValidationId;
     account.verificationMethod = method;
+    if (status === 'pending') {
+      // Still with the bank — stays PENDING (PAYOUT_PENDING to the seller).
+      account.verificationStatus = BANK_ACCOUNT_STATES.PENDING;
+      account.failureReason = '';
+      await account.save();
+      return account;
+    }
+    const verified = status === 'active';
+    account.verificationStatus = verified ? BANK_ACCOUNT_STATES.VERIFIED : BANK_ACCOUNT_STATES.FAILED;
     account.verifiedAt = verified ? new Date() : null;
-    account.failureReason = verified ? '' : `Provider returned status: ${status}`;
+    account.failureReason = verified ? '' : 'The bank could not validate this account. Check the account number and IFSC.';
     account.history.push({ action: verified ? 'VERIFIED' : 'VERIFICATION_FAILED' });
     await account.save();
     await createAuditLog({
@@ -62,6 +76,14 @@ async function verifyBankAccount({ sellerId, req }) {
       entity: 'seller_bank_accounts', entityId: account._id,
     });
   } catch (err) {
+    // Payouts not configured on this server (production without
+    // RazorpayX) — not the seller's fault; leave the account PENDING.
+    if (err.statusCode === 503) {
+      account.verificationStatus = BANK_ACCOUNT_STATES.PENDING;
+      account.failureReason = err.message;
+      await account.save();
+      return account;
+    }
     account.verificationStatus = BANK_ACCOUNT_STATES.FAILED;
     account.failureReason = err.message;
     account.history.push({ action: 'VERIFICATION_FAILED', note: err.message });

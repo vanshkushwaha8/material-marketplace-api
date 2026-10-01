@@ -11,7 +11,7 @@
  * verifyWebhookSignature({ rawBody, signature })
  *   returns: boolean
  * fetchPayment(providerPaymentId)
- *   returns: { status, method, amountPaise, raw }
+ *   returns: { status, method, amountPaise, currency, orderId, raw }
  * initiateRefund({ providerPaymentId, amountPaise, notes })
  *   returns: { providerRefundId, status, raw }
  */

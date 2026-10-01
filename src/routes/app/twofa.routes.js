@@ -15,6 +15,7 @@ router.post('/2fa/email/verify-setup', authapiLimiter({ windowMs: 15 * 60 * 1000
 router.post('/2fa/acknowledge-recovery', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), ...kycAuth, twofaController.acknowledgeRecoveryCodes);
 router.post('/2fa/switch-method', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), ...kycAuth, twofaController.switchMethod);
 router.post('/2fa/recovery/regenerate', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 20 }), ...kycAuth, twofaController.regenerateRecoveryCodes);
+router.post('/2fa/email/send-code', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), ...kycAuth, twofaController.sendAccountEmailCode);
 router.get('/2fa/status', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...kycAuth, twofaController.getStatus);
 router.post('/2fa/disable/initiate', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), ...kycAuth, twofaController.initiateDisable2FA);
 router.post('/2fa/disable/confirm', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), ...kycAuth, twofaController.confirmDisable2FA);

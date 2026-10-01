@@ -44,7 +44,7 @@ const createAuditLogAdmin = ({
   affectedField,
   metadata = {},
 }) => {
-    AuditLog.create({
+  return AuditLog.create({
       adminId,
       action,
       entity,
@@ -56,7 +56,11 @@ const createAuditLogAdmin = ({
       ip: req?.ip ?? null,
       userAgent: req?.headers?.['user-agent'] ?? null,
       metadata,
-    })
+    }).catch((err) => {
+      // Same "never crash the request over an audit write" rule as
+      // createAuditLog above — previously an unhandled rejection.
+      console.error('Admin audit log failed:', err.message, '| Action:', action);
+    });
 };
 
 module.exports = { createAuditLog, createAuditLogAdmin };

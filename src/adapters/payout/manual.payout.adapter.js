@@ -9,7 +9,8 @@ const PayoutAdapterInterface = require('./payout.interface');
 class ManualPayoutAdapter extends PayoutAdapterInterface {
   async createContact({ reference }) { return { providerContactId: `manual_contact_${reference}` }; }
   async createFundAccount({ providerContactId }) { return { providerFundAccountId: `manual_fa_${providerContactId}` }; }
-  async validateFundAccount() { return { status: 'completed', method: 'manual' }; }
+  async validateFundAccount() { return { status: 'active', method: 'manual', validationId: null }; }
+  async fetchFundAccountValidation() { return { status: 'active', method: 'manual', validationId: null }; }
   async createPayout({ idempotencyKey }) { return { providerPayoutId: `manual_payout_${idempotencyKey}`, status: 'processed' }; }
   async fetchPayout(providerPayoutId) { return { status: 'processed', raw: { adapter: 'manual', providerPayoutId } }; }
 }

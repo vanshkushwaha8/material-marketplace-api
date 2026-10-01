@@ -119,10 +119,21 @@ function getPaymentAdapter() {
 function getManualTestPaymentAdapter() {
   return new ManualPaymentAdapter();
 }
-function getPayoutAdapter() {
-  if (configenv.PAYOUT_PROVIDER === 'razorpayx' && configenv.PAYMENT_KEY_ID && configenv.PAYMENT_KEY_SECRET && configenv.PAYOUT_ACCOUNT_NUMBER) {
-    return new RazorpayXPayoutAdapter();
-  }
-  return new ManualPayoutAdapter();
+// Same rule as getPaymentAdapter(): never silently fall back to the manual
+// adapter in production. ManualPayoutAdapter "verifies" every bank account
+// and reports every payout as processed — in production that would mark
+// sellers PAID without any money moving. Outside production it stays the
+// dev/QA fallback so the pipeline can be exercised without credentials.
+function isPayoutProviderConfigured() {
+  return configenv.PAYOUT_PROVIDER === 'razorpayx' && Boolean(configenv.PAYMENT_KEY_ID && configenv.PAYMENT_KEY_SECRET && configenv.PAYOUT_ACCOUNT_NUMBER);
 }
-module.exports = { getPspAdapter, getSanctionsAdapter, getPaymentAdapter, getManualTestPaymentAdapter, getPayoutAdapter };
+
+function getPayoutAdapter() {
+  if (isPayoutProviderConfigured()) return new RazorpayXPayoutAdapter();
+  if (configenv.NODE_ENV !== 'production') return new ManualPayoutAdapter();
+  const err = new Error('Seller payouts are not configured on this server yet. Please try again later.');
+  err.statusCode = 503;
+  err.isOperational = true;
+  throw err;
+}
+module.exports = { getPspAdapter, getSanctionsAdapter, getPaymentAdapter, getManualTestPaymentAdapter, getPayoutAdapter, isPayoutProviderConfigured };
