@@ -132,27 +132,18 @@ class authValidation {
             // state would need the same city dataset the frontend uses
             // (country-state-city) added as a backend dependency too;
             // left as a follow-up rather than assumed, see indianStates.constants.js.
-            location: Joi.object({
-                city: Joi.string().trim().min(2).max(100).required(),
-                state: Joi.string().trim().valid(...INDIAN_STATES).required()
-                    .messages({ 'any.only': 'Select a valid Indian state' }),
-                pincode: Joi.string().trim().pattern(/^[1-9][0-9]{5}$/).required()
-                    .messages({ 'string.pattern.base': 'Enter a valid 6-digit pincode' }),
-                area: Joi.string().trim().allow('').optional(),
-                // Optional full address line + structured metadata from the
-                // address-autocomplete suggestion (section 4) — available to
-                // every registrant, not just Business/Store (section 5).
-                address: Joi.string().trim().max(300).allow('').optional(),
-                addressMeta: Joi.object({
-                    formattedAddress: Joi.string().trim().allow('').optional(),
-                    postalCode: Joi.string().trim().allow('').optional(),
-                    country: Joi.string().trim().allow('').optional(),
-                }).optional(),
-                latitude: Joi.number().min(INDIA_LAT_RANGE[0]).max(INDIA_LAT_RANGE[1]).optional()
-                    .messages({ 'number.min': 'Location looks outside India', 'number.max': 'Location looks outside India' }),
-                longitude: Joi.number().min(INDIA_LNG_RANGE[0]).max(INDIA_LNG_RANGE[1]).optional()
-                    .messages({ 'number.min': 'Location looks outside India', 'number.max': 'Location looks outside India' }),
-            }).required(),
+            // Personal/account location — coordinates required for Buyer
+            // and Seller alike (nearby discovery is radius-based).
+            location: this.locationSchema().required(),
+
+            // BUSINESS_STORE only: the STORE's own location, distinct from
+            // the registrant's personal one (previously the store silently
+            // inherited the personal city/state and whichever lat/lng the
+            // form captured last). Optional for backward compatibility —
+            // auth.service.js#register falls back to `location` when an
+            // older client doesn't send it.
+            storeLocation: this.locationSchema()
+                .when('sellerType', { is: 'BUSINESS_STORE', then: Joi.optional(), otherwise: Joi.forbidden() }),
 
             sellerType: Joi.string()
                 .valid('INDIVIDUAL', 'BUSINESS_STORE')
@@ -291,15 +282,47 @@ class authValidation {
                 })
         });
     }
+    // Shared by registration's personal/store locations and the profile
+    // location update — coordinates are REQUIRED: radius discovery is
+    // computed from them server-side ($geoNear), never from city/pincode.
+    static locationSchema({ requireCoordinates = true } = {}) {
+        const coord = (range) => {
+            const base = Joi.number().min(range[0]).max(range[1])
+                .messages({ 'number.min': 'Location looks outside India', 'number.max': 'Location looks outside India' });
+            return requireCoordinates
+                ? base.required().messages({ 'any.required': 'Share your location or pick an address so buyers nearby can find you' })
+                : base.optional();
+        };
+        return Joi.object({
+            city: Joi.string().trim().min(2).max(100).required(),
+            state: Joi.string().trim().valid(...INDIAN_STATES).required()
+                .messages({ 'any.only': 'Select a valid Indian state' }),
+            pincode: Joi.string().trim().pattern(/^[1-9][0-9]{5}$/).required()
+                .messages({ 'string.pattern.base': 'Enter a valid 6-digit pincode' }),
+            area: Joi.string().trim().max(120).allow('').optional(),
+            address: Joi.string().trim().max(300).allow('').optional(),
+            addressMeta: Joi.object({
+                formattedAddress: Joi.string().trim().allow('').optional(),
+                postalCode: Joi.string().trim().allow('').optional(),
+                country: Joi.string().trim().allow('').optional(),
+            }).optional(),
+            latitude: coord(INDIA_LAT_RANGE),
+            longitude: coord(INDIA_LNG_RANGE),
+        });
+    }
+
     static ProfileUpdate() {
         return Joi.object({
 
-            userType: Joi.string()
-                .valid('Buyer', 'Seller')
-                .optional()
-                .messages({
-                    'any.only': 'Invalid userType'
-                }),
+            // Role and login email are NOT self-service: switching
+            // Buyer<->Seller skipped seller onboarding entirely, and an
+            // email change skipped re-verification. Silently stripped
+            // (rather than rejected) so older clients that echo the whole
+            // profile back keep working.
+            userType: Joi.any().strip(),
+            email: Joi.any().strip(),
+
+            location: this.locationSchema().optional(),
 
             buyerType: Joi.string()
                 .valid('Homeowner', 'Individual', 'Builder', 'Contractor', 'Business')
@@ -328,13 +351,6 @@ class authValidation {
                 .allow('')
                 .messages({
                     'string.base': 'Full name must be a string'
-                }),
-
-            email: Joi.string()
-                .email()
-                .optional()
-                .messages({
-                    'string.email': 'Email must be a valid email address'
                 }),
 
             phoneNumber: Joi.string()

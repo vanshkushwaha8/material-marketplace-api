@@ -77,6 +77,10 @@ const materialListingSchema = new mongoose.Schema(
     ],
 
     viewCount: { type: Number, default: 0 },
+    // Set atomically the first time the listing goes LIVE and followers are
+    // told about it — re-approval after an edit or pause/resume never
+    // notifies them twice.
+    followersNotifiedAt: { type: Date, default: null },
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },
   },
   { timestamps: true }
@@ -85,6 +89,9 @@ const materialListingSchema = new mongoose.Schema(
 materialListingSchema.index({ title: 'text', description: 'text', brand: 'text' });
 materialListingSchema.index({ 'location.geo': '2dsphere' });
 materialListingSchema.index({ status: 1, verificationStatus: 1, category: 1, price: 1, createdAt: -1 });
+// Per-seller reads: listing detail's sellerProductsCount, store/seller
+// storefront grids, nearby-seller live-listing counts, admin user detail.
+materialListingSchema.index({ seller: 1, status: 1, is_deleted: 1 });
 materialListingSchema.pre('validate', function (next) {
   if (this.isNew && this.availableQuantity == null) {
     this.availableQuantity = this.quantity;

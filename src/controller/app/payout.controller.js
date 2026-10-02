@@ -25,6 +25,14 @@ class PayoutController {
     } catch (error) { nextFunction(error); }
   };
 
+  // ?refresh=true re-checks an asynchronous penny drop still with the bank.
+  payoutReadiness = async (request, response, nextFunction) => {
+    try {
+      const result = await payoutService.getPayoutReadiness(request.auth._id, { refresh: request.query.refresh === 'true', req: request });
+      return responseConstants.success(response, 'Payout readiness fetched', result, statusCodes.OK);
+    } catch (error) { nextFunction(error); }
+  };
+
   retryPayout = async (request, response, nextFunction) => {
     try {
       const payout = await payoutService.retryPayout({ payoutId: request.params.id, sellerId: request.auth._id, req: request });

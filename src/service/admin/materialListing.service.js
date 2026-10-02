@@ -4,6 +4,7 @@ const deleteConstants = require('../../constants/delete.constants');
 const { LISTING_STATES, VERIFICATION_STATES } = require('../../constants/materialListing.constants');
 const { createAuditLogAdmin } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
+const { notifyFollowersOfNewListing } = require('../app/sellerFollow.service');
 
 class MaterialListingAdminError extends Error {
   constructor(message, statusCode = 400) {
@@ -73,6 +74,9 @@ async function decide({ adminId, listingId, decision, note, req }) {
     action: decision === 'VERIFY' ? auditLogConstants.MATERIAL_LISTING_VERIFIED : auditLogConstants.MATERIAL_LISTING_REJECTED,
     entity: 'material_listings', entityId: listing._id, metadata: { note: note || '' },
   });
+  // First publish → tell the seller's followers (exactly once per listing;
+  // a re-verification after an edit is a no-op inside).
+  if (listing.status === LISTING_STATES.LIVE) await notifyFollowersOfNewListing(listing._id);
   return listing;
 }
 
@@ -86,6 +90,11 @@ async function forceStatusChange({ adminId, listingId, status, reason, req }) {
   listing.stateHistory.push({ fromStatus, toStatus: status, changedBy: adminId, changedByType: 'admin', reason: reason || '' });
   await listing.save();
   await createAuditLogAdmin({ req, adminId, action: auditLogConstants.MATERIAL_LISTING_STATUS_CHANGED, entity: 'material_listings', entityId: listing._id, metadata: { fromStatus, toStatus: status, reason: reason || '' } });
+  // Resuming a paused / restocked listing isn't "new" — only announce a
+  // listing that was never public before (e.g. REJECTED → LIVE override).
+  if (status === LISTING_STATES.LIVE && ![LISTING_STATES.PAUSED, LISTING_STATES.SOLD_OUT].includes(fromStatus)) {
+    await notifyFollowersOfNewListing(listing._id);
+  }
   return listing;
 }
 

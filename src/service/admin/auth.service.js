@@ -1,3 +1,4 @@
+const { applyProfileImageChange } = require('../../helper/profileImage.helper');
 const helper = require('../../helper/helper')
 const adminModel = require('../../model/admin.model');
 const fs = require("fs");
@@ -53,9 +54,15 @@ authService.changePassword = async (request) => {
 
 authService.updateProfile = async (request) => {
     const userId = request?.auth?._id;
+    const current = await adminModel.findOne({ _id: userId, is_deleted: deleteConstants.NOT_DELETED }).select("profilePicture");
+    const $set = { fullName: request.body.fullName };
+    // Same shared photo lifecycle as buyers/sellers (validate, move out of
+    // the date-sharded temp folder, delete the replaced file, '' removes).
+    const storedPicture = await applyProfileImageChange({ current: current?.profilePicture, next: request.body.profilePicture, folder: "adminProfile" });
+    if (storedPicture !== undefined) $set.profilePicture = storedPicture;
     const data = await adminModel.findOneAndUpdate(
         { _id: userId, is_deleted: deleteConstants.NOT_DELETED },
-        { $set: { fullName: request.body.fullName } },
+        { $set },
         { new: true }
     ).select("fullName profilePicture email type isSuperAdmin roleId mfaEnabled");
     return data;

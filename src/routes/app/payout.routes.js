@@ -9,6 +9,8 @@ const sellerAuth = [authMiddleware([userTypeConstants.Seller]), twoFactorAuthent
 
 router.post('/seller/bank-account', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 10 }), ...sellerAuth, payoutController.linkBankAccount);
 router.get('/seller/bank-account', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 100 }), ...sellerAuth, payoutController.getBankAccount);
+// Limited well below the page-load limits — refresh=true can call the provider.
+router.get('/seller/payout-readiness', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...sellerAuth, payoutController.payoutReadiness);
 router.post('/seller/payouts/:id/retry', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 20 }), ...sellerAuth, payoutController.retryPayout);
 router.get('/seller/payouts', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...sellerAuth, payoutController.myPayouts);
 

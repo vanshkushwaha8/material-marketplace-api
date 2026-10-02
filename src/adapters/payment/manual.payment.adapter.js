@@ -26,8 +26,12 @@ class ManualPaymentAdapter extends PaymentAdapterInterface {
     return { status: 'captured', method: 'manual', amountPaise: null, raw: { adapter: 'manual', providerPaymentId } };
   }
 
-  async initiateRefund({ amountPaise }) {
-    return { providerRefundId: `manual_refund_${Date.now()}`, status: 'processed', raw: { adapter: 'manual', amountPaise } };
+  async initiateRefund({ amountPaise, receipt }) {
+    return { providerRefundId: `manual_refund_${receipt || Date.now()}`, status: 'processed', raw: { adapter: 'manual', amountPaise } };
+  }
+
+  async fetchRefund({ providerRefundId }) {
+    return { status: 'processed', amountPaise: null, raw: { adapter: 'manual', providerRefundId } };
   }
 }
 

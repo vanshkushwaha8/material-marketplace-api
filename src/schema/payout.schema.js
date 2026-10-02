@@ -25,6 +25,15 @@ const payoutSchema = new mongoose.Schema(
     providerPayoutStatus: { type: String, default: '' },
     failureReason: { type: String, trim: true, default: '' },
     processedAt: { type: Date, default: null },
+    // Incremented by every claim (initiateProviderPayout). The provider
+    // idempotency key is `${_id}:${attempts}`, so a network retry of the same
+    // attempt can never pay twice, while a deliberate retry after a failure is
+    // a new provider request.
+    attempts: { type: Number, default: 0 },
+    // How this payout was completed: by the provider, or marked by an admin
+    // after a verified out-of-band transfer (externalReference required).
+    resolution: { type: String, enum: ['PROVIDER', 'MANUAL', null], default: null },
+    externalReference: { type: String, trim: true, default: '' },
 
     history: [{ action: { type: String, required: true }, note: { type: String, trim: true, default: '' }, at: { type: Date, default: Date.now } }],
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },

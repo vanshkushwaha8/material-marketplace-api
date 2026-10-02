@@ -27,6 +27,15 @@ const paymentSchema = new mongoose.Schema(
     status: { type: String, enum: Object.values(PAYMENT_STATES), default: PAYMENT_STATES.CREATED, index: true },
     failureReason: { type: String, trim: true, default: '' },
 
+    // Set when the provider captured money that the marketplace could NOT
+    // apply to its transaction — e.g. captured after the reservation had
+    // expired/been cancelled, a second capture for an already-paid
+    // transaction, or a captured amount/currency that doesn't match the
+    // order. The buyer has been charged, so an admin must refund or
+    // reconcile it; never silently ignored.
+    reconciliationRequired: { type: Boolean, default: false },
+    reconciliationReason: { type: String, trim: true, default: '' },
+
     refunds: [
       {
         providerRefundId: { type: String },

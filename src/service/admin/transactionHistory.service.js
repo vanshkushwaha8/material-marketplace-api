@@ -3,20 +3,25 @@ const transactionModel = require('../../model/transaction.model');
 const paymentModel = require('../../model/payment.model');
 const payoutModel = require('../../model/payout.model');
 const deleteConstants = require('../../constants/delete.constants');
+const { ESCROW_LABELS } = require('../../constants/escrow.constants');
+const { deriveLegacyEscrowStatus } = require('../app/escrow.service');
 
 // Real admin "Transaction History" — every transaction regardless of
 // status, joined against its payment and payout records so admin can see
 // payment/handover/settlement state in one place. (Previously this read
 // ACCEPTED offers as a placeholder before the Transaction/Payment models
 // existed; those now exist, so this reads them directly.)
-async function list({ page = 1, limit = 20, search, status, from, to }) {
+async function list({ page = 1, limit = 20, search, status, escrowStatus, from, to }) {
   const query = { is_deleted: deleteConstants.NOT_DELETED };
   if (status) query.status = status;
+  if (escrowStatus) query.escrowStatus = escrowStatus;
   if (from || to) query.createdAt = { ...(from && { $gte: new Date(from) }), ...(to && { $lte: new Date(to) }) };
 
   if (search) {
     const materialListingModel = require('../../model/materialListing.model');
-    const matches = await materialListingModel.find({ title: { $regex: search, $options: 'i' } }).select('_id');
+    // Escaped: raw admin input used as a regex allowed ReDoS / regex injection.
+    const safe = String(search).slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matches = await materialListingModel.find({ title: { $regex: safe, $options: 'i' } }).select('_id');
     query.listing = { $in: matches.map((m) => m._id) };
   }
 
@@ -35,11 +40,17 @@ async function list({ page = 1, limit = 20, search, status, from, to }) {
   const transactionIds = rows.map((t) => t._id);
   const [payments, payouts] = transactionIds.length
     ? await Promise.all([
-        paymentModel.find({ transaction: { $in: transactionIds } }).select('transaction status method provider providerPaymentId providerOrderId').lean(),
+        // Newest first, so the map below keeps the captured attempt (or the latest one).
+        paymentModel.find({ transaction: { $in: transactionIds } }).select('transaction status method provider providerPaymentId providerOrderId').sort({ createdAt: 1 }).lean(),
         payoutModel.find({ transaction: { $in: transactionIds } }).select('transaction status netPayoutAmount').lean(),
       ])
     : [[], []];
-  const paymentByTxnId = new Map(payments.map((p) => [String(p.transaction), p]));
+  const CAPTURED = ['SUCCESS', 'PARTIALLY_REFUNDED', 'REFUNDED'];
+  const paymentByTxnId = new Map();
+  payments.forEach((p) => {
+    const prev = paymentByTxnId.get(String(p.transaction));
+    if (!prev || !CAPTURED.includes(prev.status) || CAPTURED.includes(p.status)) paymentByTxnId.set(String(p.transaction), p);
+  });
   const payoutByTxnId = new Map(payouts.map((p) => [String(p.transaction), p]));
 
   const getData = rows.map((t) => {
@@ -56,6 +67,11 @@ async function list({ page = 1, limit = 20, search, status, from, to }) {
       grossAmount: t.agreedAmount,
       currency: t.currency,
       transactionStatus: t.status,
+      escrowStatus: t.escrowStatus || deriveLegacyEscrowStatus(t, payout),
+      escrowLabel: ESCROW_LABELS[t.escrowStatus || deriveLegacyEscrowStatus(t, payout)],
+      escrowAttentionReason: t.escrowAttentionReason || '',
+      commissionSellerType: t.commissionSellerType || null,
+      refundStatus: t.refund?.status || 'NONE',
       paymentStatus: payment?.status || null,
       paymentMethod: payment?.method || null,
       handoverStatus: t.handoverStartedAt ? 'HANDED_OVER' : 'PENDING',

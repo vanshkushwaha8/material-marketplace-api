@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const cache = require('../../helper/cache.helper');
 const storeProfileModel = require('../../model/storeProfile.model');
 const userModel = require('../../model/user.model');
 const businessTypeModel = require('../../model/businessType.model');
@@ -116,6 +117,13 @@ async function updateMyStoreProfile({ sellerId, body, req }) {
   let updatedLocation = null;
   if (body.location) {
     updatedLocation = buildLocation(body.location);
+    // A client that omits coordinates (the old Store Profile page only sent
+    // city/state) must not silently erase the store's pinned point — that
+    // wiped `geo` from the store AND, via the updateMany below, from every
+    // listing, dropping them all out of radius search.
+    if (!updatedLocation.geo && store.location?.geo?.coordinates?.length === 2) {
+      updatedLocation.geo = { type: 'Point', coordinates: [...store.location.geo.coordinates] };
+    }
     store.location = updatedLocation;
   }
 
@@ -132,21 +140,29 @@ async function updateMyStoreProfile({ sellerId, body, req }) {
     );
   }
   await createAuditLog({ req, userId: sellerId, action: auditLogConstants.STORE_PROFILE_UPDATED, entity: 'store_profiles', entityId: store._id });
+  await cache.del(cache.NAMESPACES.STORE, String(sellerId));
   return store;
 }
 
 // Public storefront summary — city/state only (not the full street
 // address or coordinates), same "don't expose more than a buyer needs"
 // principle as the buyer-location handling elsewhere in the marketplace.
+// Cached per seller (10 min, shared/public data only): every store-page
+// view reads it, and it changes only when the seller edits their store
+// (updateMyStoreProfile drops the entry) or an admin changes the account.
 async function getPublicStoreProfile(sellerId) {
   if (!mongoose.Types.ObjectId.isValid(sellerId)) throw new StoreProfileError('Invalid store id', 404);
+  const cached = await cache.getOrSet(cache.NAMESPACES.STORE, String(sellerId), 10 * 60, () => loadPublicStoreProfile(sellerId));
+  if (!cached) throw new StoreProfileError('Store not found', 404);
+  return cached;
+}
+
+async function loadPublicStoreProfile(sellerId) {
   const store = await storeProfileModel
     .findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED })
     .populate('seller', 'fullName createdAt sellerType')
     .populate('businessType', 'name slug');
-  if (!store || store.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) {
-    throw new StoreProfileError('Store not found', 404);
-  }
+  if (!store || store.seller?.sellerType !== SELLER_TYPES.BUSINESS_STORE) return null; // not cached
   return {
     sellerId: store.seller._id,
     storeName: store.storeName,

@@ -161,7 +161,10 @@ const setupApp = () => {
     secureHeaders(req, res, next);
   });
 
-  app.use(mongoSanitize());
+  // xss-clean stays ahead of the body parsers (query/params only), as
+  // before: moving it after them would HTML-escape every JSON string
+  // value, including passwords containing `<`/`>` — silently changing
+  // what gets hashed/compared and locking those users out.
   app.use(xss());
   app.use(hpp());
 
@@ -180,6 +183,12 @@ const setupApp = () => {
       },
     })
   );
+
+  // Must run AFTER the body parsers — mounted before them, req.body is
+  // still undefined and JSON payloads were never NoSQL-sanitized at all.
+  // It only strips `$`-prefixed/dotted KEYS (never alters values), and
+  // webhook signature checks use req.rawBody captured above.
+  app.use(mongoSanitize());
 
   app.use(
     "/api/upload",

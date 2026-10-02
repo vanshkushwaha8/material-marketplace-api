@@ -290,23 +290,7 @@ twofaService.regenerateRecoveryCodes = async (userId, otpCode, otpModel) => {
   const doc = await TwofaModel.findOne({ userId });
   if (!doc) throw Object.assign(new Error('2FA not enrolled.'), { statusCode: 400 });
 
-  if (doc.activeMethod === 'totp') {
-    const plain = decryptSecret(doc.totpSecret);
-    const valid = speakeasy.totp.verify({
-      secret: plain,
-      encoding: 'base32',
-      token: otpCode.replace(/\s/g, ''),
-      window: 1,
-    });
-    if (!valid) throw Object.assign(new Error('Invalid authenticator code.'), { statusCode: 400 });
-  } else {
-    const record = await otpModel.findOne({ userId }).sort({ createdAt: -1 });
-    const otpValid = record && (await bcrypt.compare(otpCode, record.otp));
-    if (!record || !otpValid || new Date() > record.expireOn) {
-      throw Object.assign(new Error('Invalid or expired email code.'), { statusCode: 400 });
-    }
-    await otpModel.deleteMany({ userId });
-  }
+  await verifyAccountFactor(doc, userId, otpCode, otpModel);
 
   const plainCodes = Array.from({ length: 10 }, generatePlainRecoveryCode);
   const hashedCodes = await Promise.all(
@@ -321,18 +305,63 @@ twofaService.regenerateRecoveryCodes = async (userId, otpCode, otpModel) => {
   return { recoveryCodes: plainCodes };
 };
 
-twofaService.getStatus = async (userId) => {
+// `enrolled` mirrors what login actually enforces (users.mfaEnabled): a
+// method verified but recovery codes never acknowledged is NOT enrolled —
+// previously the page showed "2FA enabled" while login never asked for a
+// code. `setupPending` lets the UI resume that unfinished setup instead.
+twofaService.getStatus = async (userId, userModel) => {
   const doc = await TwofaModel.findOne({ userId });
-  if (!doc) return { enrolled: false };
+  if (!doc) return { enrolled: false, setupPending: false, totpVerified: false, emailFallback: false, activeMethod: null, recoveryCodesLeft: 0 };
+  const methodVerified = Boolean(doc.totpVerified || doc.emailFallbackEnabled);
+  const user = userModel ? await userModel.findById(userId).select('mfaEnabled').lean() : null;
+  const enrolled = methodVerified && Boolean(doc.recoveryAcknowledgedAt || user?.mfaEnabled);
   return {
-    enrolled: doc.totpVerified || doc.emailFallbackEnabled,
-    totpVerified: doc.totpVerified,
-    emailFallback: doc.emailFallbackEnabled,
+    enrolled,
+    setupPending: methodVerified && !enrolled,
+    totpVerified: Boolean(doc.totpVerified),
+    emailFallback: Boolean(doc.emailFallbackEnabled),
     activeMethod: doc.activeMethod,
     acknowledged: !!doc.recoveryAcknowledgedAt,
     recoveryCodesLeft: doc.recoveryCodes.filter((c) => c.usedAt === null).length,
   };
 };
+
+// Logged-in counterpart of sendLoginEmailOtp: an email-method user needs a
+// fresh code to regenerate recovery codes or disable 2FA (there was no way
+// to get one before — the regenerate form was unusable for them).
+twofaService.sendAccountEmailCode = async (userId, otpModel) => twofaService.sendLoginEmailOtp(userId, otpModel);
+
+// Accepts EITHER the active method's code OR an unused recovery code — so a
+// user who lost their phone (but saved recovery codes) can still turn 2FA
+// off. Marks the recovery code used.
+async function verifyAccountFactor(doc, userId, code, otpModel) {
+  const value = String(code || '').trim();
+  if (/^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/i.test(value)) {
+    const idx = await (async () => {
+      for (let i = 0; i < doc.recoveryCodes.length; i += 1) {
+        const c = doc.recoveryCodes[i];
+        if (c.usedAt === null && await verifyRecoveryCode(value.toUpperCase(), c.codeHash)) return i;
+      }
+      return -1;
+    })();
+    if (idx === -1) throw Object.assign(new Error('Invalid recovery code.'), { statusCode: 400 });
+    doc.recoveryCodes[idx].usedAt = new Date();
+    await doc.save();
+    return;
+  }
+  if (doc.activeMethod === 'totp') {
+    if (!doc.totpSecret) throw Object.assign(new Error('Authenticator app is not set up.'), { statusCode: 400 });
+    const valid = speakeasy.totp.verify({ secret: decryptSecret(doc.totpSecret), encoding: 'base32', token: value.replace(/\s/g, ''), window: 1 });
+    if (!valid) throw Object.assign(new Error('Invalid authenticator code.'), { statusCode: 400 });
+    return;
+  }
+  const record = await otpModel.findOne({ userId }).sort({ createdAt: -1 });
+  const otpValid = record && (await bcrypt.compare(value, record.otp));
+  if (!record || !otpValid || new Date() > record.expireOn) {
+    throw Object.assign(new Error('Invalid or expired email code.'), { statusCode: 400 });
+  }
+  await otpModel.deleteMany({ userId });
+}
 twofaService.initiateDisable2FA = async (userId, otpModel) => {
   const doc = await TwofaModel.findOne({ userId });
   if (!doc) throw Object.assign(new Error('2FA is not enabled.'), { statusCode: 400 });
@@ -356,26 +385,8 @@ twofaService.initiateDisable2FA = async (userId, otpModel) => {
 twofaService.confirmDisable2FA = async (userId, otp, otpModel, userModel) => {
   const doc = await TwofaModel.findOne({ userId });
   if (!doc) throw Object.assign(new Error('2FA is not enabled.'), { statusCode: 400 });
-  if (doc.activeMethod === 'totp') {
-    if (!doc.totpSecret) {
-      throw Object.assign(new Error('Authenticator app is not set up.'), { statusCode: 400 });
-    }
-    const plain = decryptSecret(doc.totpSecret);
-    const valid = speakeasy.totp.verify({
-      secret: plain,
-      encoding: 'base32',
-      token: otp.replace(/\s/g, ''),
-      window: 1,
-    });
-    if (!valid) throw Object.assign(new Error('Invalid authenticator code.'), { statusCode: 400 });
-  } else {
-    const record = await otpModel.findOne({ userId }).sort({ createdAt: -1 });
-    const otpValid = record && (await bcrypt.compare(otp, record.otp));
-    if (!record || !otpValid || new Date() > record.expireOn) {
-      throw Object.assign(new Error('Invalid or expired email code.'), { statusCode: 400 });
-    }
-    await otpModel.deleteMany({ userId });
-  }
+
+  await verifyAccountFactor(doc, userId, otp, otpModel);
 
   await TwofaModel.deleteOne({ userId });
   await userModel.findByIdAndUpdate(userId, { mfaEnabled: false });

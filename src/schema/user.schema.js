@@ -61,6 +61,10 @@ const userSchema = new mongoose.Schema({
       area: { type: String, trim: true, default: '' },
       geo: { type: geoPointSchema, default: undefined },
     },
+    // Set whenever `location` is (re)captured — registration or the
+    // profile location update. Change history itself lives in the audit
+    // log (USER_LOCATION_UPDATED), not on this document.
+    locationUpdatedAt: { type: Date, default: null },
     // BUSINESS_STORE only — undefined/ignored for INDIVIDUAL sellers and
     // Buyers. Kept here purely as a denormalized display name (used by
     // review.service.js / requirement.service.js / materialListing.service.js
@@ -119,6 +123,10 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    // Google account id ("sub") once the user has signed in with Google
+    // (service/app/googleAuth.service.js). Never a credential on its own —
+    // every Google sign-in re-verifies a fresh ID token.
+    googleSub: { type: String, default: undefined },
    
     // Buyer's saved/shortlisted material listings (was wishlistProjectIds
     // against the removed `projects` collection). Same shape reused for
@@ -210,6 +218,13 @@ userSchema.index(
     }
 );
 userSchema.index({ 'location.geo': '2dsphere' });
+// auth.controller.js#register / #updateProfile duplicate-phone checks run
+// `{ phoneNumber, is_deleted }` on every signup — previously a collection scan.
+userSchema.index({ phoneNumber: 1, is_deleted: 1 });
+userSchema.index({ googleSub: 1 }, { unique: true, sparse: true });
+// Admin user management (service/admin/user.service.js#list): role /
+// seller-type filters with newest-first sorting are the default view.
+userSchema.index({ is_deleted: 1, userType: 1, sellerType: 1, createdAt: -1 });
 userSchema.pre("validate", function (next) {
     if (this.email) {
         this.email = this.email.trim().toLowerCase();

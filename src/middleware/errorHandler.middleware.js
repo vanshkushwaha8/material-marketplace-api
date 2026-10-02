@@ -44,6 +44,17 @@ const errorHandler = (error, request, response, next) => {
   if (error.message === "Not allowed by CORS") {
     return responseConstants.Forbidden(response, "Origin not allowed.");
   }
+  // Optimistic-concurrency conflict (offer/transaction schemas): two
+  // requests edited the same negotiation/transaction at once and this one
+  // lost. Retrying after a refresh is the correct client behaviour.
+  if (error.name === "VersionError") {
+    return response.status(statusCodes.CONFLICT || 409).json({
+      status: false,
+      message: "This record was just updated by someone else — refresh and try again.",
+      code: "CONCURRENT_UPDATE",
+      ...(requestId ? { errorId: requestId } : {}),
+    });
+  }
   const statusCode = error.statusCode || statusCodes.INTERNAL_SERVER_ERROR;
   const isKnownOperationalError =
     error instanceof AppError ||

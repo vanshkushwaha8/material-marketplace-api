@@ -40,7 +40,10 @@ const offerSchema = new mongoose.Schema(
     expiresAt: { type: Date, required: true },
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },
   },
-  { timestamps: true }
+  // optimisticConcurrency: two parties acting on the same negotiation at
+  // once (seller ACCEPT vs buyer COUNTER) used to silently overwrite each
+  // other; the loser now gets a VersionError -> 409 CONCURRENT_UPDATE.
+  { timestamps: true, optimisticConcurrency: true }
 );
 
 offerSchema.statics.DEFAULT_EXPIRY_HOURS = DEFAULT_OFFER_EXPIRY_HOURS;

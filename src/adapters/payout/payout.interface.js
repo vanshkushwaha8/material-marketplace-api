@@ -8,7 +8,8 @@
  * createContact({ name, email, reference })                          -> { providerContactId }
  * createFundAccount({ providerContactId, accountHolderName, accountNumber, ifsc })
  *                                                                     -> { providerFundAccountId }
- * validateFundAccount({ providerFundAccountId })                     -> { status, method }
+ * validateFundAccount({ providerFundAccountId })                     -> { status: 'active'|'pending'|'failed', method, validationId }
+ * fetchFundAccountValidation(validationId)                           -> { status: 'active'|'pending'|'failed', method, validationId }
  * createPayout({ providerFundAccountId, amountPaise, currency, idempotencyKey, notes })
  *                                                                     -> { providerPayoutId, status }
  * fetchPayout(providerPayoutId)                                      -> { status, raw }
@@ -17,6 +18,7 @@ class PayoutAdapterInterface {
   async createContact(_p) { throw new Error('createContact() not implemented'); }
   async createFundAccount(_p) { throw new Error('createFundAccount() not implemented'); }
   async validateFundAccount(_p) { throw new Error('validateFundAccount() not implemented'); }
+  async fetchFundAccountValidation(_validationId) { throw new Error('fetchFundAccountValidation() not implemented'); }
   async createPayout(_p) { throw new Error('createPayout() not implemented'); }
   async fetchPayout(_providerPayoutId) { throw new Error('fetchPayout() not implemented'); }
 }

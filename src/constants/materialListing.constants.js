@@ -13,9 +13,12 @@ const LISTING_STATES = Object.freeze({
   ARCHIVED: 'ARCHIVED',
 });
 
-// Listings visible in public browse/search — everything else is seller- or
-// admin-only.
-const BUYER_VISIBLE_STATES = [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT, LISTING_STATES.PAUSED, LISTING_STATES.REJECTED, LISTING_STATES.ARCHIVED, LISTING_STATES.DRAFT,LISTING_STATES.PENDING_VERIFICATION];
+// Listings anyone may open by id on the public detail page — everything
+// else (DRAFT/PENDING_VERIFICATION/REJECTED/ARCHIVED) is unmoderated or
+// withdrawn and stays seller-/admin-only (plus buyers already negotiating
+// on it — see materialListing.service.js#getOne). Search itself is
+// narrower still: LIVE + SOLD_OUT only.
+const BUYER_VISIBLE_STATES = [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT, LISTING_STATES.PAUSED];
 
 const VERIFICATION_STATES = Object.freeze({
   UNVERIFIED: 'UNVERIFIED',

@@ -1,6 +1,25 @@
 const mongoose = require('mongoose');
 const { TRANSACTION_STATES, SETTLEMENT_STATES, COMMISSION_STATES } = require('../constants/transaction.constants');
 const deleteConstants = require('../constants/delete.constants');
+const { ESCROW_STATES, ESCROW_PENDING_OPERATIONS, ESCROW_ACTORS } = require('../constants/escrow.constants');
+
+// One row per escrow transition — the financial audit trail shown to the
+// buyer, seller and admin. Written ONLY by escrow.service.js#transition.
+const escrowEventSchema = new mongoose.Schema(
+  {
+    from: { type: String, default: null },
+    to: { type: String, required: true },
+    action: { type: String, required: true },
+    actorType: { type: String, enum: Object.values(ESCROW_ACTORS), required: true },
+    actorId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    reason: { type: String, trim: true, default: '' },
+    providerRef: { type: String, default: '' }, // provider payment / refund / payout id
+    amount: { type: Number, default: null },
+    idempotencyKey: { type: String, default: null },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
 // Same shape as material_listings' mediaSchema — handover evidence is
 // uploaded through the same generic upload endpoint as listing media.
@@ -46,6 +65,37 @@ const transactionSchema = new mongoose.Schema(
     settlementStatus: { type: String, enum: Object.values(SETTLEMENT_STATES), default: SETTLEMENT_STATES.PENDING },
     commissionStatus: { type: String, enum: Object.values(COMMISSION_STATES), default: COMMISSION_STATES.PENDING, index: true },
 
+    // ---- Escrow (authoritative money state) — see escrow.constants.js ----
+    escrowStatus: { type: String, enum: Object.values(ESCROW_STATES), default: ESCROW_STATES.INITIATED, index: true },
+    // What a REQUIRES_ADMIN_ACTION / failed state is waiting on.
+    escrowPendingOperation: { type: String, enum: [...Object.values(ESCROW_PENDING_OPERATIONS), null], default: null },
+    escrowAttentionReason: { type: String, trim: true, default: '' },
+    escrowHistory: { type: [escrowEventSchema], default: [] },
+
+    // Commission lock (taken when the payment is captured): which seller
+    // type and which admin commission setting produced
+    // platformCommissionPct. Later admin changes never touch this.
+    commissionSellerType: { type: String, default: null },
+    commissionSetting: { type: mongoose.Schema.Types.ObjectId, ref: 'commission_settings', default: null },
+    commissionLockedAt: { type: Date, default: null },
+    commissionDeductedAt: { type: Date, default: null },
+    releaseRequestedAt: { type: Date, default: null },
+    releasedAt: { type: Date, default: null },
+
+    // Full refund of the captured payment (partial refunds are not part of
+    // the escrow flow — a provider-side partial refund is flagged for admin).
+    refund: {
+      status: { type: String, enum: ['NONE', 'PENDING', 'PROCESSED', 'FAILED'], default: 'NONE' },
+      amount: { type: Number, default: null },
+      providerRefundId: { type: String, default: '' },
+      reason: { type: String, trim: true, default: '' },
+      requestedAt: { type: Date, default: null },
+      requestedByAdmin: { type: mongoose.Schema.Types.ObjectId, ref: 'admins', default: null },
+      completedAt: { type: Date, default: null },
+      failureReason: { type: String, trim: true, default: '' },
+      attempts: { type: Number, default: 0 },
+    },
+
     disputed: { type: Boolean, default: false },
     disputeReason: { type: String, trim: true, default: '' },
 
@@ -65,9 +115,13 @@ const transactionSchema = new mongoose.Schema(
 
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },
   },
-  { timestamps: true }
+  // Same reasoning as offer.schema.js — e.g. a dispute raised while the
+  // buyer's "confirm receipt" is in flight must not be overwritten by it.
+  { timestamps: true, optimisticConcurrency: true }
 );
 
 transactionSchema.index({ status: 1, reservationExpiresAt: 1 });
+// Admin "needs attention" queue and escrow dashboards.
+transactionSchema.index({ escrowStatus: 1, updatedAt: -1 });
 
 module.exports = transactionSchema;

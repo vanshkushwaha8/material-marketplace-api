@@ -75,6 +75,8 @@ class adminValidation {
                 'string.empty': 'Name is required',
                 'string.min': 'Name must be at least 2 characters long.',
             }),
+            // Temp-upload filename from POST /upload/singleImage; '' removes the photo.
+            profilePicture: Joi.string().trim().max(255).allow('').optional(),
         });
     }
     static validateUpdateProfile(data) {

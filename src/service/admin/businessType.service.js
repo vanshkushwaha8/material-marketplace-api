@@ -68,4 +68,16 @@ async function list({ page = 1, limit = 200, status }) {
   return { getData, count, page: pageNum, limit: pageLimit };
 }
 
-module.exports = { BusinessTypeError, create, update, remove, list };
+// Business-type writes invalidate the cached public list and the cached
+// store profiles (which embed the business type's name).
+const cache = require('../../helper/cache.helper');
+const invalidating = (fn) => async (...args) => {
+  const result = await fn(...args);
+  await Promise.all([
+    cache.invalidateNamespace(cache.NAMESPACES.BUSINESS_TYPES),
+    cache.invalidateNamespace(cache.NAMESPACES.STORE),
+  ]);
+  return result;
+};
+
+module.exports = { BusinessTypeError, create: invalidating(create), update: invalidating(update), remove: invalidating(remove), list };

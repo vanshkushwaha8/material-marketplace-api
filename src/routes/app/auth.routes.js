@@ -10,6 +10,7 @@ const { authapiLimiter } = require("../../utils/rateLimiter.utils");
 const router = express.Router();
 router.post("/register", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 10 }), authController.register);
 router.post("/login", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 20 }), authController.login);
+router.post("/google-login", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 20 }), authController.googleLogin);
 
 router.get("/emailVerification", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), passwordController.emailVerification);
 router.post("/resend-verification", authapiLimiter({ windowMs: 10 * 60 * 1000, max: 5, message: "Too many verification emails requested. Please wait before trying again." }), passwordController.resendVerfication);
