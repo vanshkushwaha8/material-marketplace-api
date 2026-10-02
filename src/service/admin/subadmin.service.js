@@ -1,48 +1,62 @@
+const BRAND = require('../../config/brand.config');
 const helper = require('../../helper/helper')
 const adminModel = require('../../model/admin.model');
 const roleModel = require('../../model/role.model');
 const { createAuditLogAdmin } = require("../../helper/audit.helper");
 const sendEmail = require("../../helper/sendVerificationEmail");
-const passwordResetModel = require('../../model/passwordReset.model');
+const accountToken = require('../../helper/accountToken.helper');
+const { TOKEN_TYPES, ACCOUNTS, STATES } = accountToken;
+const { isPasswordSimilarToUserInfo } = require('../../utils/passwordSimilarity');
 const passwordService = require("../app/password.service")
 const statusCodes = require("../../constants/httpConstants");
 const auditLogConstants = require("../../constants/auditLogConstants");
 
 const CollectionName = require("../../constants/auditLogcollection.constant");
 const statusConstants = require("../../constants/status.constants");
-const moduleModel = require('../../model/module.model');
 const sessionModel = require('../../model/session.model');
 const configenv = require('../../config/env.config');
 const sendInviteAdmin = require("../../templates/InviteAdmin")
-const crypto = require('crypto')
 const mongoose = require("mongoose");
 const path = require("path")
 const fs = require("fs")
 const deleteConstants = require("../../constants/delete.constants");
+const logger = require('../../logger/error.logger');
+const { AppError } = require('../../utils/AppError');
+
+// Staff management never touches the Super Admin account: it isn't a
+// "sub-admin" and must not be editable, disabled or re-roled from here.
+async function findStaff(id) {
+    const admin = await adminModel.findOne({ _id: id, is_deleted: deleteConstants.NOT_DELETED });
+    if (!admin || admin.isSuperAdmin === true || admin.type === 'admin') {
+        throw new AppError("Staff member not found", statusCodes.NOT_FOUND);
+    }
+    return admin;
+}
+
+// Staff can only be given an existing, active role.
+async function assertAssignableRole(roleId) {
+    const role = await roleModel.findOne({ _id: roleId, is_deleted: deleteConstants.NOT_DELETED, status: statusConstants.active }).select('_id').lean();
+    if (!role) throw new AppError("Select an active role", statusCodes.BAD_REQUEST);
+}
+
 const subAdminService = {}
 subAdminService.add = async (data, request) => {
     if (await adminModel.findOne({ email: data.email, is_deleted: deleteConstants.NOT_DELETED })) {
         throw Object.assign(new Error("Email already exist"), { statusCode: statusCodes.CONFLICT });
     }
+    await assertAssignableRole(data.roleId);
     if (data?.profilePicture) {
         await helper.moveFileFromFolder(data.profilePicture, 'admin')
     }
-    const userData = await adminModel.create(data);
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = helper.hashToken(rawToken);
-    const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
-    await passwordResetModel.create({ adminId: userData._id, tokenHash, expiresAt });
-    const roleInfo = await roleModel.findOne({ _id: userData?.roleId, is_deleted: deleteConstants.NOT_DELETED, status: statusConstants.active });
-    const subject = "Opalus Admin Console Invitation";
-    const verifyUrl = `${configenv.FRONTEND_URL}/sub-admins/set-password?token=${rawToken}`;
-    const tokkendData = {
-        name: userData?.fullName,
-        email: userData?.email,
-        roleName: roleInfo?.roleName,
-        inviteUrl: verifyUrl
-    }
-    const html = await sendInviteAdmin(tokkendData);
-    sendEmail(userData?.email, subject, html);
+    const userData = await adminModel.create({
+        fullName: data.fullName,
+        email: data.email,
+        roleId: data.roleId,
+        profilePicture: data.profilePicture || undefined,
+        type: 'subadmin',
+        isSuperAdmin: false,
+    });
+    const invitation = await sendInvitation(userData);
     await createAuditLogAdmin({
         req: request,
         adminId: request?.auth._id,
@@ -50,37 +64,17 @@ subAdminService.add = async (data, request) => {
         entity: CollectionName.admins,
         entityId: userData._id, metadata: {
             SUBADMINS: "SUBADMIN_ADD",
-            info: tokkendData
+            info: invitation.audit,
         }
     });
 };
 subAdminService.resend = async (request) => {
-    const userData = await adminModel.findOne({ _id: request?.query?._id });
-    if (!userData) {
-        throw Object.assign(new Error("sub-admin not found"), { statusCode: statusCodes.NOT_FOUND });
+    const userData = await findStaff(request?.query?._id);
+    if (userData.isPasswordSet || userData.invitation === "accepted") {
+        throw new AppError("This staff member has already set their password. They can use Forgot Password on the admin login page to change it.", statusCodes.BAD_REQUEST);
     }
-    if (userData?.invitation == "accepted") {
-        throw Object.assign(new Error("sub-admin already accepeted invitation"), { statusCode: statusCodes.BAD_REQUEST });
-    }
-    const existingInvitation = await passwordResetModel.findOne({ adminId: userData._id, expiresAt: { $gt: new Date() } });
-    if (existingInvitation) {
-        throw Object.assign(new Error("Sub-admin invitation already sent"), { statusCode: statusCodes.BAD_REQUEST });
-    }
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = helper.hashToken(rawToken);
-    const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
-    await passwordResetModel.create({ adminId: request?.query?._id, tokenHash, expiresAt });
-    const roleInfo = await roleModel.findOne({ _id: userData?.roleId, is_deleted: deleteConstants.NOT_DELETED, status: statusConstants.active });
-    const subject = "Opalus Admin Console Invitation";
-    const verifyUrl = `${configenv.FRONTEND_URL}/sub-admins/set-password?token=${rawToken}`;
-    const tokkendData = {
-        name: userData?.fullName,
-        email: userData?.email,
-        roleName: roleInfo?.roleName,
-        inviteUrl: verifyUrl
-    }
-    const html = await sendInviteAdmin(tokkendData);
-    sendEmail(userData?.email, subject, html);
+    // Resending replaces the old link: issue() revokes it.
+    const invitation = await sendInvitation(userData);
     await createAuditLogAdmin({
         req: request,
         adminId: request?.auth._id,
@@ -88,15 +82,13 @@ subAdminService.resend = async (request) => {
         entity: CollectionName.admins,
         entityId: userData._id, metadata: {
             SUBADMINS: "SUBADMIN_INVITE_RESEND",
-            info: tokkendData
+            info: invitation.audit,
         }
     });
 };
 subAdminService.update = async (data, request) => {
-    const admin = await adminModel.findOne({ _id: data?._id, is_deleted: deleteConstants.NOT_DELETED });
-    if (!admin) {
-        throw Object.assign(new Error("Sub admin not found"), { statusCode: statusCodes.NOT_FOUND });
-    }
+    const admin = await findStaff(data?._id);
+    await assertAssignableRole(data.roleId);
     let newProfilePicture = data.profilePicture;
     if (newProfilePicture && newProfilePicture !== admin.profilePicture) {
         await helper.moveFileFromFolder(newProfilePicture, 'admin');
@@ -110,7 +102,12 @@ subAdminService.update = async (data, request) => {
         if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
     }
     const roleChanged = data.roleId && String(data.roleId) !== String(admin.roleId);
-    await adminModel.findByIdAndUpdate(data?._id, data);
+    await adminModel.findByIdAndUpdate(admin._id, {
+        fullName: data.fullName,
+        email: data.email,
+        roleId: data.roleId,
+        ...(data.profilePicture !== undefined ? { profilePicture: data.profilePicture } : {}),
+    });
     if (roleChanged) {
         const [oldRole, newRole] = await Promise.all([
             roleModel.findOne({ _id: admin.roleId }),
@@ -171,44 +168,86 @@ subAdminService.update = async (data, request) => {
 
     }
 };
+// ---- Invitation link (/sub-admins/set-password?token=…) -------------------
+// Valid only for an invited staff member who hasn't set a password yet. Once
+// they have, the link is dead for good (consumed, and every other invitation
+// revoked); later changes go through Forgot Password.
+const INVITE = { type: TOKEN_TYPES.STAFF_INVITATION, account: ACCOUNTS.ADMIN };
+const INVITE_MESSAGES = accountToken.MESSAGES[TOKEN_TYPES.STAFF_INVITATION];
+
+subAdminService.validateInvitation = async (token) => {
+    const { state, record, message } = await accountToken.inspect(token, INVITE);
+    if (!record) return { valid: false, reason: state, message };
+    const admin = await adminModel.findOne({ _id: record.adminId }).select("_id fullName email isPasswordSet invitation status is_deleted isSuperAdmin type").lean();
+    if (!admin || admin.is_deleted === deleteConstants.DELETED || admin.isSuperAdmin === true || admin.type === 'admin') {
+        return { valid: false, reason: STATES.INVALID, message: INVITE_MESSAGES.INVALID, record };
+    }
+    // Already set (whatever state this particular link is in) → the
+    // "use Forgot Password" answer, never a second password set.
+    if (admin.isPasswordSet || admin.invitation === "accepted") {
+        return { valid: false, reason: "ALREADY_SET", message: INVITE_MESSAGES.USED, record, admin };
+    }
+    if (state !== STATES.VALID) return { valid: false, reason: state, message, record, admin };
+    if (admin.status !== statusConstants.active) {
+        return { valid: false, reason: STATES.INVALID, message: "This account has been deactivated. Contact the Super Admin.", record, admin };
+    }
+    return { valid: true, record, admin };
+};
+
 subAdminService.passwordSet = async (request) => {
-    const tokenHash = await helper.hashToken(request?.body?.token);
-    const verificationData = await passwordResetModel.findOne({ tokenHash: tokenHash });
-    if (!verificationData) {
-        throw Object.assign(new Error("Invalid or expired token"), { statusCode: statusCodes.BAD_REQUEST });
+    const { token, newPassword } = request.body;
+    const check = await subAdminService.validateInvitation(token);
+    if (!check.valid) {
+        if (check.record) {
+            await createAuditLogAdmin({ req: request, adminId: check.record.adminId, action: check.reason === STATES.EXPIRED ? auditLogConstants.PASSWORD_LINK_EXPIRED : auditLogConstants.PASSWORD_RESET_LINK_ALREADY_USED, entity: CollectionName.admins, entityId: check.record.adminId, metadata: { reason: check.reason } });
+        }
+        throw new AppError(check.message, statusCodes.BAD_REQUEST, check.reason, { valid: false, reason: check.reason });
     }
-    const userInfp = await adminModel.findOne({ _id: verificationData?.adminId })
-    if (verificationData.used) {
-        await createAuditLogAdmin({ req: request, adminId: verificationData?.adminId, action: auditLogConstants.PASSWORD_RESET_LINK_ALREADY_USED, entity: "SUBADMIN", entityId: verificationData?.adminId });
-        throw Object.assign(new Error("Invalid or expired token"), { statusCode: statusCodes.BAD_REQUEST });
-
+    const { admin } = check;
+    if (isPasswordSimilarToUserInfo(newPassword, { fullName: admin.fullName, email: admin.email })) {
+        throw new AppError("Password must not be similar to your name or email address.", statusCodes.BAD_REQUEST, "WEAK_PASSWORD", { reason: "WEAK_PASSWORD" });
     }
-    if (verificationData.expiresAt < new Date()) {
-        await createAuditLogAdmin({ req: request, adminId: verificationData?.adminId, action: auditLogConstants.PASSWORD_RESET_LINK_EXPIRED, entity: "SUBADMIN", entityId: verificationData?.adminId });
-        throw Object.assign(new Error("Invalid or expired token"), { statusCode: statusCodes.BAD_REQUEST });
-
+    if (!(await accountToken.consume(check.record))) {
+        throw new AppError(INVITE_MESSAGES.USED, statusCodes.BAD_REQUEST, "ALREADY_SET", { valid: false, reason: "ALREADY_SET" });
     }
-    request.body.newPassword = await helper.createPassword(request.body.newPassword);
-    await adminModel.findByIdAndUpdate({ _id: verificationData?.adminId }, { password: request?.body?.newPassword, failedLoginAttempts: 0, lockUntil: null, lastFailedLoginAt: null, isPasswordSet: true, invitation: "accepted" });
-    await passwordResetModel.updateMany({ adminId: verificationData?.adminId, used: false }, { $set: { used: true } });
-    await helper.AdmindeleteSession(verificationData?.adminId);
-    const userData = {
-        fullName: userInfp?.fullName,
-        email: userInfp?.email,
+    // Conditional on isPasswordSet:false so two different valid links can't
+    // both set a password.
+    const updated = await adminModel.updateOne(
+        { _id: admin._id, isPasswordSet: { $ne: true } },
+        { password: await helper.createPassword(newPassword), failedLoginAttempts: 0, lockUntil: null, lastFailedLoginAt: null, isPasswordSet: true, invitation: "accepted" }
+    );
+    if (!updated.modifiedCount) {
+        throw new AppError(INVITE_MESSAGES.USED, statusCodes.BAD_REQUEST, "ALREADY_SET", { valid: false, reason: "ALREADY_SET" });
     }
-    await passwordService.sendPasswordChangedNotice(userData);
+    await accountToken.revokeActive({ account: ACCOUNTS.ADMIN, ownerId: admin._id });
+    await helper.AdmindeleteSession(admin._id);
+    passwordService.sendPasswordChangedNotice({ fullName: admin.fullName, email: admin.email });
     await createAuditLogAdmin({
         req: request,
-        adminId: verificationData?.adminId,
+        adminId: admin._id,
         action: auditLogConstants.PASSWORDSET,
         entity: CollectionName.admins,
-        entityId: verificationData?.adminId,
+        entityId: admin._id,
         metadata: {
             updateType: "PASSWORD_SET",
-            method: "EMAIL_VERIFICATION"
+            method: "STAFF_INVITATION"
         }
     });
+};
+
+/**
+ * Issue a fresh invitation link (revoking earlier ones) and email it. The
+ * raw token goes into the email only — the audit entry gets safe fields.
+ */
+async function sendInvitation(admin) {
+    const { rawToken, expiresAt, validFor } = await accountToken.issue({ ...INVITE, ownerId: admin._id });
+    const roleInfo = await roleModel.findOne({ _id: admin.roleId, is_deleted: deleteConstants.NOT_DELETED, status: statusConstants.active }).select("roleName").lean();
+    const inviteUrl = `${configenv.FRONTEND_URL}/sub-admins/set-password?token=${rawToken}`;
+    const html = await sendInviteAdmin({ name: admin.fullName, email: admin.email, roleName: roleInfo?.roleName, inviteUrl, validFor });
+    sendEmail(admin.email, `You're invited to the ${BRAND.NAME} admin console`, html);
+    return { audit: { name: admin.fullName, email: admin.email, roleName: roleInfo?.roleName, expiresAt } };
 }
+
 subAdminService.get = async (request) => {
     const page = Number(request?.query?.page) || 1;
     const limit = Number(request?.query?.limit) || 10;
@@ -216,11 +255,13 @@ subAdminService.get = async (request) => {
     const search = request?.query?.search;
     const matchCondition = {
         is_deleted: deleteConstants.NOT_DELETED,
-        isSuperAdmin: false,
+        isSuperAdmin: { $ne: true },
     };
     if (search) {
+        const pattern = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         matchCondition.$or = [
-            { roleName: { $regex: search, $options: "i" } },
+            { fullName: { $regex: pattern, $options: "i" } },
+            { email: { $regex: pattern, $options: "i" } },
         ];
     }
     const data = await adminModel.aggregate([
@@ -260,13 +301,7 @@ subAdminService.get = async (request) => {
 
 };
 subAdminService.delete = async (request) => {
-    const moduleData = await adminModel.findOne({ _id: request?.query?._id, is_deleted: deleteConstants.NOT_DELETED })
-    if (!moduleData) {
-        throw Object.assign(new Error("subadmin not found"), { statusCode: statusCodes.NOT_FOUND });
-    }
-    else if (moduleData?.isSuperAdmin) {
-        throw Object.assign(new Error("Ops you can't delete super admin"), { statusCode: statusCodes.FORBIDDEN });
-    }
+    const moduleData = await findStaff(request?.query?._id);
     await adminModel.findByIdAndUpdate(request?.query?._id, { is_deleted: deleteConstants.DELETED });
     await sessionModel.deleteMany({ adminId: request?.query?._id }).catch((err) => {
         logger.error('Failed to invalidate sessions on subadmin revoke', { message: err.message, adminId: request?.query?._id });
@@ -286,10 +321,7 @@ subAdminService.delete = async (request) => {
     });
 };
 subAdminService.status = async (request) => {
-    const moduleData = await adminModel.findOne({ _id: request?.query?._id, is_deleted: deleteConstants.NOT_DELETED })
-    if (!moduleData) {
-        throw Object.assign(new Error("sub-admin not found"), { statusCode: statusCodes.NOT_FOUND });
-    }
+    const moduleData = await findStaff(request?.query?._id);
     if (moduleData.status === statusConstants.active) {
         await adminModel.findByIdAndUpdate(request?.query?._id, { status: statusConstants.inactive });
         await createAuditLogAdmin({

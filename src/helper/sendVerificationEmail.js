@@ -1,5 +1,6 @@
 const nodemailer = require("nodemailer");
 const configenv = require("../config/env.config");
+const BRAND = require("../config/brand.config");
 
 const transporter = nodemailer.createTransport({
     host: configenv.SMTP_SERVICE,
@@ -19,12 +20,18 @@ const transporter = nodemailer.createTransport({
 const sendEmail = async (email, title, body) => {
     try {
       
+        const html = String(body || "");
         const info = await transporter.sendMail({
-            from: configenv.EMAIL_USER,
+            // Display name = the platform, not the bare SMTP mailbox.
+            from: { name: BRAND.NAME, address: configenv.EMAIL_USER },
             to: email,
             subject: title,
-            html: body,
+            html,
             encoding: "base64",
+            // Brand logo embedded inline for the shared email layout.
+            attachments: html.includes(`cid:${BRAND.LOGO_CID}`)
+                ? [{ filename: "logo.png", path: BRAND.LOGO_FILE, cid: BRAND.LOGO_CID }]
+                : [],
         });
 
         return info;

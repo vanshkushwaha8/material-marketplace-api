@@ -174,7 +174,7 @@ class TwofaController {
       const sessionData = await authService.login(userData);
       const ipAddress = getClientIp(req);
       const hashToken = await helper.hashToken(sessionData.token);
-      await sessionModel.create({ adminId: userId, token: hashToken, ipAddress });
+      await sessionModel.create({ adminId: userId, token: hashToken, ipAddress, userAgent: String(req?.headers?.['user-agent'] || '').slice(0, 300) });
       await createAuditLogAdmin({ req, adminId: userId, action: auditLogConstants.TWOFA_LOGIN, entity:CollectionName.admins, entityId: userId });
       setAdminAuthCookie(res, sessionData.token);
       const { token, ...sessionDataWithoutToken } = sessionData;
@@ -199,7 +199,7 @@ class TwofaController {
       const sessionData = await authService.login(userData);
       const ipAddress = getClientIp(req);
       const hashToken = await helper.hashToken(sessionData.token);
-      await sessionModel.create({ adminId: userId, token: hashToken, ipAddress });
+      await sessionModel.create({ adminId: userId, token: hashToken, ipAddress, userAgent: String(req?.headers?.['user-agent'] || '').slice(0, 300) });
       await createAuditLogAdmin({ req, adminId: userId, action: auditLogConstants.TWOFA_RECOVERY_LOGIN, entity:CollectionName.admins, entityId: userId });
       setAdminAuthCookie(res, sessionData.token);
       const { token, ...sessionDataWithoutToken } = sessionData;

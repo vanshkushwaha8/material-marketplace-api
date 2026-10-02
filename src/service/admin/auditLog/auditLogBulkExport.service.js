@@ -1,3 +1,4 @@
+const { isSuperAdmin } = require('../../../helper/authorization.helper');
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
@@ -78,12 +79,30 @@ async function buildExportQuery(filters = {}) {
     query.$or = or;
   }
 
+  // Same role values the audit-log filter offers (auditLog.service.js
+  // getRoleOptions): Buyer / Seller (users.userType), 'Admin' (the Super
+  // Admin) and staff role names.
   if (role) {
-  
-    const roles = String(role).split(',').map((r) => r.trim().toLowerCase()).filter(Boolean);
-    if (roles.some((r) => ['investor', 'issuer', 'developer', 'compliance officer', 'complianceofficer'].includes(r))) {
-      query.userId = { $ne: null };
+    const wanted = String(role).split(',').map((r) => r.trim()).filter(Boolean);
+    const userTypes = wanted.filter((r) => ['Buyer', 'Seller'].includes(r));
+    const staffRoleNames = wanted.filter((r) => !['Buyer', 'Seller', 'Admin'].includes(r));
+    const actorMatch = [];
+    if (userTypes.length) {
+      const ids = await userModel.find({ userType: { $in: userTypes } }).select('_id').lean();
+      actorMatch.push({ userId: { $in: ids.map((u) => u._id) } });
     }
+    const adminFilters = [];
+    if (wanted.includes('Admin')) adminFilters.push({ isSuperAdmin: true });
+    if (staffRoleNames.length) {
+      const roles = await roleModel.find({ roleName: { $in: staffRoleNames } }).select('_id').lean();
+      if (roles.length) adminFilters.push({ roleId: { $in: roles.map((r) => r._id) } });
+    }
+    if (adminFilters.length) {
+      const ids = await adminModel.find({ $or: adminFilters }).select('_id').lean();
+      actorMatch.push({ adminId: { $in: ids.map((a) => a._id) } });
+    }
+    // An unknown role value matches nothing (never "everything").
+    query.$and = [...(query.$and || []), { $or: actorMatch.length ? actorMatch : [{ _id: null }] }];
   }
 
   return query;
@@ -323,9 +342,10 @@ async function getJobStatus(jobId, auth) {
   const job = await auditLogExportJobModel.findById(jobId);
   if (!job) throw new AuditLogBulkExportError('Export job not found', 404);
 
-  const isFullAccess = auth?.isSuperAdmin === true || auth?.type === 'admin';
-  if (!isFullAccess && String(job.requestedByAdminId) !== String(auth?._id)) {
-    throw new AuditLogBulkExportError('You do not have access to this export job', 403);
+  // Ownership: staff see only their own export jobs (Super Admin sees all).
+  // Someone else's job answers 404 so job ids can't be probed.
+  if (!isSuperAdmin(auth) && String(job.requestedByAdminId) !== String(auth?._id)) {
+    throw new AuditLogBulkExportError('Export job not found', 404);
   }
   return job;
 }

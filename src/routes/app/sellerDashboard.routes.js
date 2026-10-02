@@ -1,8 +1,9 @@
 const express = require('express');
 const responseConstants = require('../../constants/response.constatnts');
 const statusCodes = require('../../constants/httpConstants');
-const userTypeConstants = require('../../constants/usertype.constants');
 const { authMiddleware, twoFactorAuthenticationCheck } = require('../../middleware/auth.middleware');
+const { authorize } = require('../../middleware/authorize.middleware');
+const { USER_PERMISSIONS: P } = require('../../constants/rbac.constants');
 const { authapiLimiter } = require('../../utils/rateLimiter.utils');
 const sellerDashboardService = require('../../service/app/sellerDashboard.service');
 const router = express.Router();
@@ -11,8 +12,9 @@ const router = express.Router();
 router.get(
   '/seller/dashboard-summary',
   authapiLimiter({ windowMs: 15 * 60 * 1000, max: 200 }),
-  authMiddleware([userTypeConstants.Seller]),
+  authMiddleware(),
   twoFactorAuthenticationCheck,
+  authorize(P.SELLER_DASHBOARD_READ),
   async (request, response, nextFunction) => {
     try {
       const summary = await sellerDashboardService.getSummary(request.auth._id);

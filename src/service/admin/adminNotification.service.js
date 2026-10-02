@@ -1,10 +1,7 @@
 const mongoose = require('mongoose');
 const { EventEmitter } = require('events');
 const adminNotificationModel = require('../../model/adminNotification.model');
-const roleModel = require('../../model/role.model');
-const permissionModel = require('../../model/permission.model');
-const deleteConstants = require('../../constants/delete.constants');
-const statusConstants = require('../../constants/status.constants');
+const { REALMS, resolveAccess } = require('../../helper/authorization.helper');
 const { ADMIN_NOTIFICATION_TYPES, ADMIN_NOTIFICATION_CATEGORIES, ADMIN_NOTIFICATION_SEVERITY } = require('../../constants/adminNotification.constants');
 
 // In-process fan-out to connected admin SSE streams (same single-instance
@@ -50,18 +47,11 @@ async function notifyAdmins(type, data) {
   }
 }
 
-// Which notifications this admin may see: everything for super-admins,
-// otherwise exactly the permissions on their active role (same resolution
-// as permission.middleware.js).
+// Which notifications this admin may see: a notification is visible to an
+// admin who holds its requiredPermission (Super Admin holds all of them).
 async function getVisibility(admin) {
-  if (admin?.isSuperAdmin === true || admin?.type === 'admin') return { all: true, permissions: null };
-  const role = admin?.roleId
-    ? await roleModel.findOne({ _id: admin.roleId, is_deleted: deleteConstants.NOT_DELETED, status: statusConstants.active }).select('permissionIds').lean()
-    : null;
-  if (!role) return { all: false, permissions: [] };
-  const perms = await permissionModel.find({ _id: { $in: role.permissionIds || [] }, is_deleted: deleteConstants.NOT_DELETED, status: statusConstants.active })
-    .select('modulePermission').lean();
-  return { all: false, permissions: perms.map((p) => p.modulePermission) };
+  const access = await resolveAccess(admin, REALMS.ADMIN);
+  return { all: false, permissions: [...access.permissions] };
 }
 
 function visibilityFilter(visibility) {

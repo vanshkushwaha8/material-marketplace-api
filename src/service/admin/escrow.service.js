@@ -1,3 +1,5 @@
+require('../../model/admin.model'); // registers `admins` for the populate() of admin refs below
+const { ADMIN_PERMISSIONS } = require('../../constants/rbac.constants');
 const mongoose = require('mongoose');
 const transactionModel = require('../../model/transaction.model');
 const paymentModel = require('../../model/payment.model');
@@ -35,6 +37,20 @@ const ADMIN_ACTIONS = Object.freeze({
 });
 
 const MANUAL_ACTIONS = [ADMIN_ACTIONS.MANUAL_RELEASE, ADMIN_ACTIONS.MANUAL_REFUND];
+
+// Permission(s) each action needs (checked by the controller before
+// performAction runs). `all` = every key, `any` = at least one.
+const { PAYMENT_RELEASE, PAYMENT_REFUND, PAYMENT_MANUAL_RESOLVE } = ADMIN_PERMISSIONS;
+const ACTION_PERMISSIONS = Object.freeze({
+  [ADMIN_ACTIONS.OPEN_REVIEW]: { any: [PAYMENT_RELEASE, PAYMENT_REFUND] },
+  [ADMIN_ACTIONS.REFRESH_STATUS]: { any: [PAYMENT_RELEASE, PAYMENT_REFUND] },
+  [ADMIN_ACTIONS.APPROVE_RELEASE]: { all: [PAYMENT_RELEASE] },
+  [ADMIN_ACTIONS.RETRY_RELEASE]: { all: [PAYMENT_RELEASE] },
+  [ADMIN_ACTIONS.REFUND]: { all: [PAYMENT_REFUND] },
+  [ADMIN_ACTIONS.RETRY_REFUND]: { all: [PAYMENT_REFUND] },
+  [ADMIN_ACTIONS.MANUAL_RELEASE]: { all: [PAYMENT_RELEASE, PAYMENT_MANUAL_RESOLVE] },
+  [ADMIN_ACTIONS.MANUAL_REFUND]: { all: [PAYMENT_REFUND, PAYMENT_MANUAL_RESOLVE] },
+});
 
 /** Which admin actions make sense for a transaction right now (drives the UI buttons). */
 function availableActions(txn, payout) {
@@ -86,7 +102,7 @@ async function getDetail(transactionId) {
  * Run one admin recovery action.
  * @param {{ transactionId, action, reason, externalReference?, idempotencyKey?, adminId, canManual?, req }} p
  */
-async function performAction({ transactionId, action, reason, externalReference = '', idempotencyKey = null, adminId, canManual = true, req }) {
+async function performAction({ transactionId, action, reason, externalReference = '', idempotencyKey = null, adminId, canManual = false, req }) {
   if (!Object.values(ADMIN_ACTIONS).includes(action)) throw new AdminEscrowError('Unknown action');
   if (MANUAL_ACTIONS.includes(action)) {
     if (!canManual) throw new AdminEscrowError('You do not have permission for manual payment resolution', 403);
@@ -195,4 +211,4 @@ async function attentionQueue({ page = 1, limit = 20 }) {
   return { getData: getData.map((t) => ({ ...t, escrowLabel: ESCROW_LABELS[t.escrowStatus] })), count, page: pageNum, limit: pageLimit };
 }
 
-module.exports = { AdminEscrowError, ADMIN_ACTIONS, availableActions, getDetail, performAction, attentionQueue };
+module.exports = { AdminEscrowError, ADMIN_ACTIONS, ACTION_PERMISSIONS, availableActions, getDetail, performAction, attentionQueue };

@@ -1,154 +1,108 @@
+const BRAND = require('../../config/brand.config');
+const { passwordResetEmail, passwordChangedEmail } = require('../../templates/accountEmails');
 const userModel = require('../../model/user.model');
 const helper = require('../../helper/helper');
-const crypto = require('crypto');
 const sendEmail = require("../../helper/sendVerificationEmail");
 const configenv = require('../../config/env.config');
-const passwordResetModel = require('../../model/passwordReset.model');
+const accountToken = require('../../helper/accountToken.helper');
+const { TOKEN_TYPES, ACCOUNTS, STATES } = accountToken;
+const deleteConstants = require('../../constants/delete.constants');
+const { isPasswordSimilarToUserInfo } = require('../../utils/passwordSimilarity');
 const verificationModel = require('../../model/verification.model');
 const sessionModel = require('../../model/session.model');
 const { createAuditLog } = require("../../helper/audit.helper");
 const CollectionName = require("../../constants/auditLogcollection.constant");
 const auditLogConstants = require("../../constants/auditLogConstants")
-const messageConstants = require('../../constants/message.constants');
 const passwordService = {};
 
 
 passwordService.changePassword = async (request) => {
     const hashPassword = await helper.createPassword(request.body.newPassword);
     await userModel.findByIdAndUpdate({ _id: request?.auth?._id }, { password: hashPassword });
-    const currentToken = (request.headers?.authorization || '').replace(/^Bearer\s+/i, '');
-    const hashToken = await helper.hashToken(currentToken)
-    if (hashToken) {
-        await sessionModel.deleteMany({ userId: request.auth._id, token: { $ne: hashToken } });
-    } else {
-        await sessionModel.deleteMany({ userId: request.auth._id });
-    }
+    // Keep only this device signed in. (The session token travels in the
+    // httpOnly cookie, so the auth middleware's session record is the
+    // reliable handle — the old Authorization-header lookup was empty for
+    // cookie sessions and signed the user out everywhere, here included.)
+    const currentSessionId = request.session?._id;
+    await sessionModel.deleteMany({ userId: request.auth._id, ...(currentSessionId ? { _id: { $ne: currentSessionId } } : {}) });
+    // A reset link emailed earlier must not undo this change.
+    await accountToken.revokeActive({ account: ACCOUNTS.USER, ownerId: request.auth._id, types: [TOKEN_TYPES.PASSWORD_RESET] });
 };
 
+// One reset email per account per minute, whatever the request rate.
+const RESEND_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * Send a reset link to an existing account. The caller always answers with
+ * the same generic message, so nothing here may reveal whether the email is
+ * registered. A new request replaces (revokes) the previous link.
+ */
 passwordService.requestPasswordReset = async (request, userData) => {
-    const existingReset = await passwordResetModel.findOne({
-        userId: userData._id, used: false,
-        expiresAt: {
-            $gt: new Date()
-        }
-    });
-    if (existingReset) {
-        const remainingHours = Math.ceil(
-            (existingReset.expiresAt.getTime() - Date.now()) /
-            (1000 * 60 * 60)
-        );
-        await createAuditLog({
-            req: request,
-            userId: userData._id,
-            action: auditLogConstants.PASSWORD_RESET_ALREADY_REQUESTED,
-            entity: CollectionName.passwordresets,
-            entityId: existingReset._id
-        });
-        return {
-            code: "RESET_LINK_ALREADY_SENT",
-            remainingHours
-        };
+    const owner = { type: TOKEN_TYPES.PASSWORD_RESET, account: ACCOUNTS.USER, ownerId: userData._id };
+    const previous = await accountToken.latest(owner);
+    if (previous && Date.now() - new Date(previous.createdAt).getTime() < RESEND_COOLDOWN_MS) {
+        await createAuditLog({ req: request, userId: userData._id, action: auditLogConstants.PASSWORD_RESET_ALREADY_REQUESTED, entity: CollectionName.passwordresets, entityId: previous._id });
+        return { code: "COOLDOWN" };
     }
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = helper.hashToken(rawToken);
-    const expiresAt = new Date(
-        Date.now() + (24 * 60 * 60 * 1000)
-    );
-    const reset = await passwordResetModel.create({
-        userId: userData._id,
-        tokenHash,
-        expiresAt
-    });
-    const resetUrl =
-        `${configenv.FRONTEND_URL}/reset-password?token=${rawToken}`;
-    const subject = "Reset your password";
-    const html = `
-        <p>We received a request to reset your password.</p>
-
-        <p>
-            <a href="${resetUrl}">
-                Reset Password
-            </a>
-        </p>
-
-        <p>
-            This password reset link is valid for <strong>24 hours</strong>
-            and can only be used once.
-        </p>
-
-        <p>
-            If you did not request this password reset,
-            you can safely ignore this email.
-        </p>
-    `;
-    await sendEmail(
-        userData.email,
-        subject,
-        html
-    );
-    await createAuditLog({
-        req: request,
-        userId: userData._id,
-        action: auditLogConstants.PASSWORD_RESET_LINK_SENT,
-        entity: CollectionName.passwordresets,
-        entityId: reset._id
-    });
-    return {
-        code: "RESET_LINK_SENT"
-    };
+    const { rawToken, record, validFor } = await accountToken.issue(owner);
+    const resetUrl = `${configenv.FRONTEND_URL}/reset-password?token=${rawToken}`;
+    // Not awaited: the response time must not reveal whether the account
+    // exists (sendEmail logs its own failures).
+    sendEmail(userData.email, `Reset your ${BRAND.NAME} password`, passwordResetEmail({ resetUrl, validFor }));
+    await createAuditLog({ req: request, userId: userData._id, action: auditLogConstants.PASSWORD_RESET_LINK_SENT, entity: CollectionName.passwordresets, entityId: record._id });
+    return { code: "RESET_LINK_SENT" };
 };
 
-passwordService.resetPassword = async (resetDoc, userData, newPassword) => {
+const AUDIT_FOR_STATE = {
+    INVALID: auditLogConstants.PASSWORD_RESET_LINK_INVALID,
+    EXPIRED: auditLogConstants.PASSWORD_RESET_LINK_EXPIRED,
+    USED: auditLogConstants.PASSWORD_RESET_LINK_ALREADY_USED,
+    REVOKED: auditLogConstants.PASSWORD_RESET_LINK_INVALID,
+};
+
+/** Check a reset link without using it. Never throws for a bad token. */
+passwordService.validateResetToken = async (request, token) => {
+    const { state, record, message } = await accountToken.inspect(token, { type: TOKEN_TYPES.PASSWORD_RESET, account: ACCOUNTS.USER });
+    if (state !== STATES.VALID) {
+        if (record) await createAuditLog({ req: request, userId: record.userId, action: AUDIT_FOR_STATE[state], entity: CollectionName.passwordresets, entityId: record._id });
+        return { valid: false, reason: state, message };
+    }
+    const userData = await userModel.findOne({ _id: record.userId, is_deleted: deleteConstants.NOT_DELETED }).select("_id status").lean();
+    if (!userData || userData.status === "suspended") {
+        return { valid: false, reason: STATES.INVALID, message: accountToken.MESSAGES[TOKEN_TYPES.PASSWORD_RESET].INVALID };
+    }
+    return { valid: true, record };
+};
+
+/**
+ * Use a reset link: validate it, check the new password against the
+ * account, consume the token atomically, then store the bcrypt hash.
+ * @returns {{ ok: true } | { ok: false, reason: string, message: string }}
+ */
+passwordService.resetPassword = async (request, { token, newPassword }) => {
+    const check = await passwordService.validateResetToken(request, token);
+    if (!check.valid) return { ok: false, reason: check.reason, message: check.message };
+    const userData = await userModel.findById(check.record.userId).select("fullName email phoneNumber");
+    if (isPasswordSimilarToUserInfo(newPassword, { fullName: userData.fullName, email: userData.email, phoneNumber: userData.phoneNumber })) {
+        return { ok: false, reason: "WEAK_PASSWORD", message: "Password must not be similar to your name, email address, or phone number." };
+    }
+    if (!(await accountToken.consume(check.record))) {
+        // Used/revoked/expired between the check and now (e.g. a double submit).
+        const again = await accountToken.inspect(token, { type: TOKEN_TYPES.PASSWORD_RESET, account: ACCOUNTS.USER });
+        return { ok: false, reason: again.state, message: again.message || accountToken.MESSAGES[TOKEN_TYPES.PASSWORD_RESET].INVALID };
+    }
     const hashPassword = await helper.createPassword(newPassword);
     await userModel.findByIdAndUpdate(userData._id, { password: hashPassword, isPasswordKey: true, failedLoginAttempts: 0, lockUntil: null, lastFailedLoginAt: null });
-    await passwordResetModel.updateMany({ userId: userData._id, used: false }, { $set: { used: true } });
+    // Any other outstanding link dies with this one; every session is signed out.
+    await accountToken.revokeActive({ account: ACCOUNTS.USER, ownerId: userData._id, types: [TOKEN_TYPES.PASSWORD_RESET] });
     await helper.deleteSession(userData._id);
     await passwordService.sendPasswordChangedNotice(userData);
-    return true;
-};
-
-passwordService.validateResetToken = async (request, token) => {
-    if (!token || typeof token !== "string") {
-        return { valid: false, reason: "INVALID", message: messageConstants.USER.PASSWORD_RESET_LINK_INVALID };
-    }
-    const tokenHash = helper.hashToken(token);
-    const resetDoc = await passwordResetModel.findOne({ tokenHash });
-    if (!resetDoc) {
-        return { valid: false, reason: "INVALID", message: messageConstants.USER.PASSWORD_RESET_LINK_INVALID };
-    }
-    const userData = await userModel.findOne({ _id: resetDoc.userId });
-    if (resetDoc.used) {
-        await createAuditLog({ req: request, userId: resetDoc.userId, action: auditLogConstants.PASSWORD_RESET_LINK_ALREADY_USED, entity: CollectionName.passwordresets, entityId: resetDoc._id });
-        return { valid: false, reason: "USED", message: messageConstants.USER.PASSWORD_RESET_LINK_ALREADY_USED };
-    }
-    if (resetDoc.expiresAt < new Date()) {
-        await createAuditLog({ req: request, userId: resetDoc?.userId, action: auditLogConstants.PASSWORD_RESET_LINK_EXPIRED, entity: CollectionName.passwordresets, entityId: resetDoc?._id });
-        return { valid: false, reason: "EXPIRED", message: messageConstants.USER.PASSWORD_RESET_LINK_EXPIRED };
-    }
-    return { valid: true };
-};
-
-passwordService.sendVerificationEmail = async (request) => {
-    await passwordResetModel.deleteMany({ userId: userData._id });
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = helper.hashToken(rawToken);
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-    await passwordResetModel.create({ userId: userData._id, tokenHash, expiresAt });
-    const resetUrl = `${configenv.FRONTEND_URL}/reset-password?token=${rawToken}`;
-    const subject = "Reset your password";
-    const html = `
-        <p>We received a request to reset your password.</p>
-        <p><a href="${resetUrl}">Click here to set a new password</a>. This link is valid for 1 hour and can be used once.</p>
-        <p>If you didn't request this, you can safely ignore this email.</p>`;
-    sendEmail(userData.email, subject, html);
+    return { ok: true, userId: userData._id };
 };
 
 passwordService.sendPasswordChangedNotice = async (userData) => {
-    const subject = "Your password was changed";
-    const html = `
-        <p>Hi ${userData.fullName || "there"},</p>
-        <p>Your  password was just changed and all active sessions were signed out.</p>
-        <p>If this wasn't you, please reset your password immediately and contact support.</p>`;
+    const subject = `Your ${BRAND.NAME} password was changed`;
+    const html = passwordChangedEmail({ name: userData.fullName });
     sendEmail(userData.email, subject, html);
 };
 

@@ -30,5 +30,27 @@ class ProjectController {
       nextFunction(error);
     }
   };
+
+  update = async (request, response, nextFunction) => {
+    try {
+      const { error, value } = projectValidation.ValidateUpdate(request.body);
+      if (responseConstants.validatIonError(response, error)) return;
+      const project = await projectService.updateProject({ projectId: request.params.id, buyerId: request.auth._id, body: value });
+      return responseConstants.success(response, 'Project updated', project, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof projectService.ProjectError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      nextFunction(error);
+    }
+  };
+
+  remove = async (request, response, nextFunction) => {
+    try {
+      await projectService.deleteProject({ projectId: request.params.id, buyerId: request.auth._id });
+      return responseConstants.success(response, 'Project deleted', null, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof projectService.ProjectError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      nextFunction(error);
+    }
+  };
 }
 module.exports = new ProjectController();

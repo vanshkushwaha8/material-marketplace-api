@@ -13,20 +13,12 @@ class TransactionHistoryController {
     }
   };
 
-  getOne = async (request, response, nextFunction) => {
-    try {
-      const result = await transactionHistoryService.getOne(request.params.id);
-      return responseConstants.success(response, 'Transaction fetched', result, statusCodes.OK);
-    } catch (error) {
-      nextFunction(error);
-    }
-  };
-
   resolveDispute = async (request, response, nextFunction) => {
     try {
       const txn = await transactionService.resolveDispute({
         transactionId: request.params.id, adminId: request.auth._id,
-        resolution: request.body?.resolution, note: request.body?.note, req: request,
+        resolution: request.body?.resolution, note: request.body?.note,
+        idempotencyKey: request.get('Idempotency-Key') || null, req: request,
       });
       return responseConstants.success(response, 'Dispute resolved', txn, statusCodes.OK);
     } catch (error) {

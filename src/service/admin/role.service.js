@@ -1,170 +1,135 @@
-const helper = require('../../helper/helper')
-const permissionModel = require('../../model/permission.model');
+const helper = require('../../helper/helper');
+const roleModel = require('../../model/role.model');
+const adminModel = require('../../model/admin.model');
 const statusCodes = require("../../constants/httpConstants");
 const statusConstants = require("../../constants/status.constants");
-const moduleModel = require('../../model/module.model');
-const roleModel = require('../../model/role.model');
+const deleteConstants = require("../../constants/delete.constants");
 const auditLogConstants = require("../../constants/auditLogConstants");
 const CollectionName = require("../../constants/auditLogcollection.constant");
 const { createAuditLogAdmin } = require("../../helper/audit.helper");
-const adminModel = require('../../model/admin.model');
-const mongoose = require("mongoose");
-const deleteConstants = require("../../constants/delete.constants");
-const roleService = {}
-roleService.add = async (data, request) => {
-    const moduleData = await roleModel.findOne({ roleName: data.roleName, is_deleted: deleteConstants.NOT_DELETED })
-    if (moduleData) {
-        throw Object.assign(new Error("Role already exists"), { statusCode: statusCodes.BAD_REQUEST });
-    }
-    const roles = await roleModel.create(data);
-    await createAuditLogAdmin({
-        req: request,
-        adminId: request?.auth._id,
-        action: auditLogConstants.ROLECREATED,
-        entity: CollectionName.roles,
-        entityId: roles._id, metadata: {}
-    });
+const { ADMIN_PERMISSION_CATALOG } = require("../../constants/rbac.constants");
+const { AppError } = require("../../utils/AppError");
 
-};
-roleService.update = async (data, request) => {
-    const roldeData = await roleModel.findOne({ _id: data?._id, is_deleted: deleteConstants.NOT_DELETED, })
-    if (!roldeData) {
-        throw Object.assign(new Error("Role not found"), { statusCode: statusCodes.NOT_FOUND });
-    }
-    if (await roleModel.findOne({ roleName: data.roleName, _id: { $ne: data?._id }, is_deleted: false, })) {
-        throw Object.assign(new Error("Role not ALREADY EXIST"), { statusCode: statusCodes.BAD_REQUEST });
-    }
-    await roleModel.findByIdAndUpdate(data?._id, data);
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+async function assertNameFree(roleName, exceptId = null) {
+    const clash = await roleModel.findOne({
+        roleName: { $regex: `^${escapeRegex(roleName)}$`, $options: 'i' },
+        is_deleted: deleteConstants.NOT_DELETED,
+        ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+    }).select('_id').lean();
+    if (clash) throw new AppError("A role with this name already exists", statusCodes.CONFLICT);
+}
+
+async function findRole(id) {
+    const role = await roleModel.findOne({ _id: id, is_deleted: deleteConstants.NOT_DELETED });
+    if (!role) throw new AppError("Role not found", statusCodes.NOT_FOUND);
+    return role;
+}
+
+const roleService = {};
+
+roleService.catalog = () => ADMIN_PERMISSION_CATALOG;
+
+roleService.add = async (data, request) => {
+    await assertNameFree(data.roleName);
+    const role = await roleModel.create({ roleName: data.roleName, description: data.description || '', permissions: data.permissions });
     await createAuditLogAdmin({
-        req: request,
-        adminId: request?.auth._id,
+        req: request, adminId: request?.auth?._id,
+        action: auditLogConstants.ROLECREATED,
+        entity: CollectionName.roles, entityId: role._id,
+        metadata: { roleName: role.roleName, permissions: role.permissions },
+    });
+    return role;
+};
+
+roleService.update = async (data, request) => {
+    const role = await findRole(data._id);
+    await assertNameFree(data.roleName, role._id);
+    const before = { roleName: role.roleName, permissions: [...role.permissions] };
+    role.roleName = data.roleName;
+    role.description = data.description ?? role.description;
+    role.permissions = data.permissions;
+    await role.save();
+    // Effective immediately: permissions are resolved from the role on every
+    // request, so staff on this role get the new set on their next call.
+    await createAuditLogAdmin({
+        req: request, adminId: request?.auth?._id,
         action: auditLogConstants.ROLEUPDATED,
-        entity: CollectionName.roles,
-        entityId: roldeData?._id,
+        entity: CollectionName.roles, entityId: role._id,
         metadata: {
             updateType: "ROLE_UPDATE",
             changes: {
-                permissionIds: {
-                    from: roldeData?.permissionIds,
-                    to: data.permissionIds
+                roleName: { from: before.roleName, to: role.roleName },
+                permissions: {
+                    added: role.permissions.filter((p) => !before.permissions.includes(p)),
+                    removed: before.permissions.filter((p) => !role.permissions.includes(p)),
                 },
-                roleName: {
-                    from: roldeData.roleName,
-                    to: data.roleName
-                },
-
-            }
-        }
+            },
+        },
     });
-
+    return role;
 };
+
 roleService.get = async (request) => {
-    const page = Number(request?.query?.page) || 1;
-    const limit = Number(request?.query?.limit) || 10;
+    const page = Math.max(1, Number(request?.query?.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(request?.query?.limit) || 10));
     const skip = (page - 1) * limit;
     const search = request?.query?.search;
-    const matchCondition = {
-        is_deleted: deleteConstants.NOT_DELETED
-    };
-    if (search) {
-        matchCondition.$or = [
-            { roleName: { $regex: search, $options: "i" } },
-        ];
-    }
+    const matchCondition = { is_deleted: deleteConstants.NOT_DELETED };
+    if (search) matchCondition.roleName = { $regex: escapeRegex(search), $options: "i" };
     const data = await roleModel.aggregate([
-        {
-            $match: matchCondition
-        },
+        { $match: matchCondition },
         {
             $lookup: {
-                from: "permissions",
-                localField: "permissionIds",
-                foreignField: "_id",
-                as: "permissionData",
-                pipeline: [
-                    {
-                        $match: {
-                            is_deleted: deleteConstants.NOT_DELETED
-                        }
-                    }, {
-                        $project: {
-                            _id: 1,
-                            modulePermission: 1,
-                            moduleDisplayPermission: 1,
-                        }
-                    }
-                ]
-            }
-
+                from: "admins",
+                localField: "_id",
+                foreignField: "roleId",
+                as: "members",
+                pipeline: [{ $match: { is_deleted: deleteConstants.NOT_DELETED } }, { $project: { _id: 1 } }],
+            },
         },
+        { $addFields: { memberCount: { $size: "$members" } } },
+        { $project: { members: 0 } },
         { $sort: { createdAt: -1 } },
         helper.applyPagination(skip, limit),
-    ])
-    const response = {
+    ]);
+    return {
         getData: data?.[0]?.paginatedResults || [],
-        count: data?.[0]?.totalCount?.[0]?.total || 0
+        count: data?.[0]?.totalCount?.[0]?.total || 0,
     };
-    return response;
-
 };
+
 roleService.delete = async (request) => {
-    const moduleData = await roleModel.findOne({ _id: request?.query?._id, is_deleted: deleteConstants.NOT_DELETED })
-    if (!moduleData) {
-        throw Object.assign(new Error("roleModel not found"), { statusCode: statusCodes.NOT_FOUND });
-    }
-    const userRole = await adminModel.findOne({ roleId: request?.query?._id, is_deleted: deleteConstants.NOT_DELETED })
-    if (userRole) {
-        throw Object.assign(new Error("Role is assigned to another sub-admin"), { statusCode: statusCodes.CONFLICT });
-    }
-    await roleModel.findByIdAndUpdate(request?.query?._id, { is_deleted: deleteConstants.DELETED });
+    const role = await findRole(request?.query?._id);
+    const assigned = await adminModel.exists({ roleId: role._id, is_deleted: deleteConstants.NOT_DELETED });
+    if (assigned) throw new AppError("This role is assigned to staff — reassign them first", statusCodes.CONFLICT);
+    role.is_deleted = deleteConstants.DELETED;
+    await role.save();
     await createAuditLogAdmin({
-        req: request,
-        adminId: request?.auth._id,
+        req: request, adminId: request?.auth?._id,
         action: auditLogConstants.ROLEDELETED,
-        entity: CollectionName.roles,
-        entityId: moduleData?._id,
-        fromState: "NOT_DELETED",
-        toState: "DELETED",
-        metadata: {
-            roleId: moduleData._id,
-            deleteType: "SOFT_DELETE"
-        }
+        entity: CollectionName.roles, entityId: role._id,
+        fromState: "NOT_DELETED", toState: "DELETED",
+        metadata: { roleId: role._id, deleteType: "SOFT_DELETE" },
     });
 };
-roleService.status = async (request) => {
-    const moduleData = await roleModel.findOne({ _id: request?.query?._id, is_deleted: deleteConstants.NOT_DELETED })
-    if (!moduleData) {
-        throw Object.assign(new Error("roleModel not found"), { statusCode: statusCodes.NOT_FOUND });
-    }
-    if (moduleData.status === statusConstants.active) {
-        await roleModel.findByIdAndUpdate(request?.query?._id, { status: statusConstants.inactive });
-        await createAuditLogAdmin({
-            req: request, adminId: request?.auth._id,
-            action: auditLogConstants.ROLESTATUSCHANGED,
-            entity: CollectionName.roles,
-            entityId: moduleData._id,
-            fromState: statusConstants.active,
-            toState: statusConstants.inactive,
-            metadata: {
-                roleId: moduleData._id,
-                deleteType: "CHANGE_STATUS"
-            }
-        });
-    } else {
-        await roleModel.findByIdAndUpdate(request?.query?._id, { status: statusConstants.active });
-        await createAuditLogAdmin({
-            req: request, adminId: request?.auth._id,
-            action: auditLogConstants.ROLESTATUSCHANGED,
-            entity: CollectionName.roles,
-            entityId: moduleData._id,
-            fromState: statusConstants.inactive,
-            toState: statusConstants.active,
-            metadata: {
-                roleId: moduleData._id,
-                deleteType: "CHANGE_STATUS"
-            }
-        });
 
-    }
+// Deactivating a role removes every permission from its staff at once
+// (resolution fails closed on an inactive role).
+roleService.status = async (request) => {
+    const role = await findRole(request?.query?._id);
+    const from = role.status;
+    role.status = from === statusConstants.active ? statusConstants.inactive : statusConstants.active;
+    await role.save();
+    await createAuditLogAdmin({
+        req: request, adminId: request?.auth?._id,
+        action: auditLogConstants.ROLESTATUSCHANGED,
+        entity: CollectionName.roles, entityId: role._id,
+        fromState: from, toState: role.status,
+        metadata: { roleId: role._id, deleteType: "CHANGE_STATUS" },
+    });
+    return role;
 };
-module.exports = roleService
+
+module.exports = roleService;

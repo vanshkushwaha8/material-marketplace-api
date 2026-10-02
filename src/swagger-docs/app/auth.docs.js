@@ -15,8 +15,8 @@
  *             properties:
  *               userType:
  *                 type: string
- *                 enum: [Investor, Owner, Developer]
- *                 example: Investor
+ *                 enum: [Buyer, Seller]
+ *                 example: Buyer
  *               fullName:
  *                 type: string
  *                 example: Sumit Kumar

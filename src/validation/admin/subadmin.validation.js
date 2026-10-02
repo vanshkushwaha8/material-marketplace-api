@@ -76,12 +76,25 @@ class subAdminValidation {
       
     });
 
+    static idSchema = Joi.object({
+        _id: Joi.string().pattern(/^[a-fA-F0-9]{24}$/).required().messages({
+            "any.required": "_id is required",
+            "string.pattern.base": "Invalid _id",
+        }),
+    });
+
+    // stripUnknown: only the fields above ever reach the admins collection
+    // (never type / isSuperAdmin / status from the request body).
     static validateAdd(data) {
-        return this.addSchema.validate(data, { abortEarly: false });
+        return this.addSchema.validate(data, { abortEarly: false, stripUnknown: true });
     }
 
     static validateUpdate(data) {
-        return this.updateSchema.validate(data, { abortEarly: false });
+        return this.updateSchema.validate(data, { abortEarly: false, stripUnknown: true });
+    }
+
+    static validateId(data) {
+        return this.idSchema.validate(data, { abortEarly: false, stripUnknown: true });
     }
 }
 

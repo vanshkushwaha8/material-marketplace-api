@@ -15,6 +15,12 @@ const sessionSchema = new mongoose.Schema(
         ipAddress: {
             type: String
         },
+        // Shown in "Active sessions" so people can recognise their devices.
+        userAgent: {
+            type: String,
+            default: '',
+            maxlength: 300,
+        },
         expireOn: {
             type: Date,
             default: () => new Date(Date.now() + 24 * 60 * 60 * 1000)

@@ -1,3 +1,4 @@
+require('../../model/admin.model'); // registers `admins` for the populate() of admin refs below
 const mongoose = require('mongoose');
 const commissionSettingModel = require('../../model/commissionSetting.model');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');

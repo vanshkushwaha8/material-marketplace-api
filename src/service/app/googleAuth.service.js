@@ -3,6 +3,7 @@ const configenv = require('../../config/env.config');
 const userModel = require('../../model/user.model');
 const deleteConstants = require('../../constants/delete.constants');
 const userTypeConstants = require('../../constants/usertype.constants');
+const { USER_ROLE_PERMISSIONS } = require('../../constants/rbac.constants');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
@@ -54,7 +55,7 @@ async function resolveUser({ idToken, userType, req }) {
     || await userModel.findOne({ email: g.email, is_deleted: deleteConstants.NOT_DELETED });
 
   if (user) {
-    if (user.userType === 'ComplianceOfficer') throw new GoogleAuthError('This account cannot sign in here', 403);
+    if (!USER_ROLE_PERMISSIONS[user.userType]) throw new GoogleAuthError('This account cannot sign in here', 403);
     if (user.googleSub && user.googleSub !== g.sub) throw new GoogleAuthError('This email is linked to a different Google account', 409);
     const updates = {};
     if (!user.googleSub) updates.googleSub = g.sub;

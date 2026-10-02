@@ -1,69 +1,69 @@
 const responseConstants = require("../../constants/response.constatnts");
 const statusCodes = require("../../constants/httpConstants");
-const deleteConstants = require("../../constants/delete.constants")
-const ModuleValidation = require("../../validation/admin/module.validation");
 const RoleValidation = require("../../validation/admin/role.validation");
 const roleService = require("../../service/admin/role.service");
-const adminModel = require("../../model/admin.model");
-const statusConstants = require("../../constants/status.constants");
-const moduleConstants = require("../../constants/module.constant");
-const auditLogConstants = require("../../constants/auditLogConstants");
-class roleController {
+
+class RoleController {
+    catalog = async (request, response, nextFunction) => {
+        try {
+            return responseConstants.success(response, "Permission catalog fetched", roleService.catalog(), statusCodes.OK);
+        } catch (error) {
+            nextFunction(error);
+        }
+    };
+
     add = async (request, response, nextFunction) => {
         try {
-            const { error } = await RoleValidation.validateAdd(request.body);
-            const validationError = responseConstants.validatIonError(response, error);
-            if (validationError) return;
-            const createdRole = await roleService.add(request.body,request);
-            return responseConstants.success(response, moduleConstants.ROLECREATED, null, statusCodes.OK);
+            const { error, value } = RoleValidation.validateAdd(request.body);
+            if (responseConstants.validatIonError(response, error)) return;
+            const role = await roleService.add(value, request);
+            return responseConstants.success(response, "Role created successfully", role, statusCodes.OK);
         } catch (error) {
-            nextFunction(error)
+            nextFunction(error);
         }
     };
+
     update = async (request, response, nextFunction) => {
         try {
-            const { error } = await RoleValidation.validateUpdate(request.body);
-            const validationError = responseConstants.validatIonError(response, error);
-            if (validationError) return;
-            await roleService.update(request.body,request);
-            return responseConstants.success(response, moduleConstants.ROLEUPDATED, null, statusCodes.OK);
+            const { error, value } = RoleValidation.validateUpdate(request.body);
+            if (responseConstants.validatIonError(response, error)) return;
+            const role = await roleService.update(value, request);
+            return responseConstants.success(response, "Role updated successfully", role, statusCodes.OK);
         } catch (error) {
-            nextFunction(error)
+            nextFunction(error);
         }
     };
+
     get = async (request, response, nextFunction) => {
         try {
-            
-            const data=await roleService.get(request.body);
-            return responseConstants.success(response, moduleConstants.ROLEFETCHED, data, statusCodes.OK);
+            const data = await roleService.get(request);
+            return responseConstants.success(response, "Roles fetched successfully", data, statusCodes.OK);
         } catch (error) {
-            nextFunction(error)
+            nextFunction(error);
         }
     };
+
     delete = async (request, response, nextFunction) => {
         try {
-            const { error } = await ModuleValidation.validateStatus(request.query);
-            const validationError = responseConstants.validatIonError(response, error);
-            if (validationError) return;
+            const { error } = RoleValidation.validateId(request.query);
+            if (responseConstants.validatIonError(response, error)) return;
             await roleService.delete(request);
-            return responseConstants.success(response, moduleConstants.ROLEDELETED, null, statusCodes.OK);
+            return responseConstants.success(response, "Role deleted successfully", null, statusCodes.OK);
         } catch (error) {
-            nextFunction(error)
+            nextFunction(error);
         }
     };
+
     status = async (request, response, nextFunction) => {
         try {
-            const { error } = await ModuleValidation.validateStatus(request.query);
-            const validationError = responseConstants.validatIonError(response, error);
-            if (validationError) return;
-            await roleService.status(request);
-            return responseConstants.success(response, moduleConstants.ROLESTATUSCHANGED, null, statusCodes.OK);
+            const { error } = RoleValidation.validateId(request.query);
+            if (responseConstants.validatIonError(response, error)) return;
+            const role = await roleService.status(request);
+            return responseConstants.success(response, "Role status changed successfully", role, statusCodes.OK);
         } catch (error) {
-            nextFunction(error)
+            nextFunction(error);
         }
     };
-
-
-   
 }
-module.exports = new roleController()
+
+module.exports = new RoleController();

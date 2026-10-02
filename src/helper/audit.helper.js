@@ -1,7 +1,4 @@
 const AuditLog = require('../model/auditLogs.model');
-const adminModel = require('../model/admin.model');
-const roleModel = require('../model/role.model');
-const ADMIN_ROLES = require('../constants/adminRoles.constants');
 const createAuditLog = ({
   req,
   userId,

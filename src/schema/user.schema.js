@@ -17,7 +17,7 @@ const geoPointSchema = new mongoose.Schema(
 const userSchema = new mongoose.Schema({
     userType: {
         type: String,
-        enum: ["Buyer", "Seller","ComplianceOfficer"],
+        enum: ["Buyer", "Seller"],
         index: true
     },
     // Buyer-only self-declared profile detail — shown on the buyer account

@@ -44,7 +44,7 @@ userConsentService.add = async (request) => {
     } catch (error) {
         if (error?.code === 11000) {
             throw new UserConsentError(
-                'Could not publish this version — a database index from before Investor/Developer consent separation may still be blocking it. Restart the backend (it auto-repairs this on startup) and try again.',
+                'Could not publish this version — an old database index from before Buyer/Seller consent separation may still be blocking it. Restart the backend (it auto-repairs this on startup) and try again.',
                 409
             );
         }
@@ -75,7 +75,7 @@ userConsentService.update = async (request) => {
     } catch (error) {
         if (error?.code === 11000) {
             throw new UserConsentError(
-                'Could not activate this version — a database index from before Investor/Developer consent separation may still be blocking it. Restart the backend (it auto-repairs this on startup) and try again.',
+                'Could not activate this version — an old database index from before Buyer/Seller consent separation may still be blocking it. Restart the backend (it auto-repairs this on startup) and try again.',
                 409
             );
         }

@@ -470,9 +470,13 @@ class authValidation {
             newPassword: this.passwordRuleRequired
         })
     }
+    // Password accounts confirm with their password; Google-only accounts
+    // (no password set) confirm by typing DELETE. The controller decides
+    // which one applies from the stored account, never from the client.
     static accountDelete() {
         return Joi.object({
-            password: this.passwordRuleRequired
+            password: Joi.string().max(128).allow('').optional(),
+            confirm: Joi.string().valid('DELETE').optional(),
         });
     }
     static sendOtp() {
@@ -499,36 +503,6 @@ class authValidation {
                     "string.email": "Please provide a valid email address",
                     "string.pattern.base": "Email must contain only letters, digits, and periods before @",
                 }),
-        });
-    }
-    static googleLogin() {
-        return Joi.object({
-            userType: Joi.string()
-                .valid('Owner', 'Seller')
-                .required()
-                .messages({
-                    'any.required': 'userType is required',
-                    'any.only': 'userType must be "tradesPerson","subContractor'
-                }),
-            googleId: Joi.string()
-                .required()
-                .messages({
-                    'string.empty': 'googleId is required',
-                    'string.base': 'googleId must be a string'
-                }),
-            fullName: Joi.string()
-                .required()
-                .messages({
-                    'string.empty': 'fullName is required',
-                    'string.base': 'fullName must be a string'
-                }),
-            email: Joi.string()
-                .required()
-                .messages({
-                    'string.empty': 'email is required',
-                    'string.base': 'email must be a string'
-                }),
-
         });
     }
     static acceptConsent() {
@@ -584,9 +558,6 @@ class authValidation {
     }
     static validateAccountDelete(data) {
         return this.accountDelete().validate(data, { abortEarly: false });
-    }
-    static validateGoogleLogin(data) {
-        return this.googleLogin().validate(data, { abortEarly: false });
     }
     static validateAcceptConsent(data) {
         return this.acceptConsent().validate(data, { abortEarly: false });

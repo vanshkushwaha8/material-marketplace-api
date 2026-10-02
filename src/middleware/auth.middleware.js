@@ -1,3 +1,4 @@
+const BRAND = require('../config/brand.config');
 const jwt = require("jsonwebtoken");
 const responseConstants = require("../constants/response.constatnts");
 const statusCodes = require("../constants/httpConstants");
@@ -16,15 +17,20 @@ const { createAuditLog } = require("../helper/audit.helper");
 const deleteConstants = require("../constants/delete.constants");
 const statusConstants = require("../constants/status.constants");
 const userConsentModel = require("../model/userconsent.model");
-const userTypeConstants = require("../constants/usertype.constants");
+const { USER_ROLE_PERMISSIONS } = require("../constants/rbac.constants");
+const { REALMS } = require("../helper/authorization.helper");
 const secretKey = configenv.SECRET_KEY;
 const INACTIVITY_MS = 30 * 60 * 1000;
 const getClientIp = (request) =>
     request.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
     request.socket?.remoteAddress ||
     request.ip;
-const authMiddleware = (allowedRoles = []) => {
-    return async (request, response, nextFunction) => {
+// Authentication only: who is calling. WHAT they may do is decided by
+// authorize()/authorizeAny() (middleware/authorize.middleware.js), placed
+// after this on every protected route.
+const authMiddleware = (...unexpected) => {
+    if (unexpected.length) throw new Error('authMiddleware() takes no arguments — use authorize(permission) for access rules');
+    const authenticate = async (request, response, nextFunction) => {
         try {
             const cookieToken = request.cookies?.[configenv.AUTH_COOKIE_NAME];
             let token = cookieToken;
@@ -81,14 +87,17 @@ const authMiddleware = (allowedRoles = []) => {
                 return responseConstants.unauthorized(response, "Email is not verified. Please verify your email first", statusCodes.UNAUTHORIZED);
             }
 
-            if (allowedRoles.length && !allowedRoles.includes(user.userType)) {
+            // Fail closed on an account whose role isn't a marketplace role
+            // (legacy/removed types, corrupted data): authenticated, but it
+            // may do nothing.
+            if (!USER_ROLE_PERMISSIONS[user.userType]) {
                 await createAuditLog({
                     req: request, userId: userId,
                     action: auditLogConstants.ROLE_ACCESS_DENIED,
                     entity: CollectionName.users,
-                    entityId: userId, metadata: {}
+                    entityId: userId, metadata: { reason: 'UNKNOWN_ROLE' }
                 });
-                return responseConstants.unauthorized(response, `Access denied. Allowed roles: ${allowedRoles.join(", ")}`, statusCodes.FORBIDDEN);
+                return responseConstants.Forbidden(response, "Your account does not have access to this application");
             }
             const isSetupToken = decoded?.scope === '2fa_setup_only';
             if (isSetupToken) {
@@ -118,6 +127,7 @@ const authMiddleware = (allowedRoles = []) => {
                 }
 
                 request.auth = { ...user.toObject(), scope: '2fa_setup_only' };
+                request.authRealm = REALMS.USER;
                 return nextFunction();
             }
             const thirtyMinutesAgo = new Date(Date.now() - INACTIVITY_MS);
@@ -164,7 +174,7 @@ const authMiddleware = (allowedRoles = []) => {
                             entity: CollectionName.users,
                             entityId: userId, metadata: {}
                         });
-                        await sendEmail(user.email, "New login location detected", html);
+                        await sendEmail(user.email, `New sign-in to your ${BRAND.NAME} account`, html);
                     } catch (mailErr) {
                         logger.error("Failed to send new-IP notification", { message: mailErr.message });
                     }
@@ -178,11 +188,14 @@ const authMiddleware = (allowedRoles = []) => {
                 lastSeen: new Date(),
             });
             request.auth = user;
+            request.authRealm = REALMS.USER;
             return nextFunction();
         } catch (error) {
             nextFunction(error);
         }
     };
+    authenticate.authRealm = REALMS.USER; // read by the route-table test
+    return authenticate;
 };
 
 const softAuthMiddleware = async (request, response, nextFunction) => {
@@ -216,6 +229,7 @@ const softAuthMiddleware = async (request, response, nextFunction) => {
         }
         const user = await userModel.findById(userId);
         request.auth = (user && user.is_deleted !== "1") ? user : null;
+        request.authRealm = request.auth ? REALMS.USER : undefined;
         return nextFunction();
     } catch (error) {
         request.auth = null;
@@ -293,30 +307,4 @@ const twoFactorAuthenticationCheck = async (request, response, nextFunction) => 
     }
 };
 
-const investorOnly = async (request, response, nextFunction) => {
-    if (request?.auth?.userType !== userTypeConstants.Buyer) {
-        await createAuditLog({
-            req: request, userId: request?.auth?._id,
-            action: auditLogConstants.ROLE_ACCESS_DENIED,
-            entity: CollectionName.users,
-            entityId: request?.auth?._id, metadata: {}
-        });
-        return responseConstants.unauthorized(response, "This resource is only available to investor accounts.", statusCodes.FORBIDDEN);
-    }
-    nextFunction();
-};
-const investorOrDeveloperOnly = async (request, response, nextFunction) => {
-    const allowed = [userTypeConstants.Buyer, userTypeConstants.Seller];
-    if (!allowed.includes(request?.auth?.userType)) {
-        await createAuditLog({
-            req: request, userId: request?.auth?._id,
-            action: auditLogConstants.ROLE_ACCESS_DENIED,
-            entity: CollectionName.users,
-            entityId: request?.auth?._id, metadata: {}
-        });
-        return responseConstants.unauthorized(response, "This resource is only available to investor or developer accounts.", statusCodes.FORBIDDEN);
-    }
-    nextFunction();
-};
-
-module.exports = { authMiddleware, twoFactorAuthenticationCheck, consentEnforced, investorOnly, investorOrDeveloperOnly, softAuthMiddleware };
+module.exports = { authMiddleware, twoFactorAuthenticationCheck, consentEnforced, softAuthMiddleware };

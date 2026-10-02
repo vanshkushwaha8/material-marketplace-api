@@ -1,3 +1,4 @@
+const BRAND = require('../../config/brand.config');
 const helper = require("../../helper/helper");
 const { setAuthCookie } = require("../../helper/authCookie");
 const { createAuditLog } = require("../../helper/audit.helper");
@@ -9,7 +10,6 @@ const userModel = require("../../model/user.model");
 const crypto = require('crypto');
 const { renderPage } = require('../../templates/verification.template');
 const auditLogConstants = require("../../constants/auditLogConstants");
-const passwordResetModel = require("../../model/passwordReset.model");
 const passwordService = require("../../service/app/password.service");
 const authService = require("../../service/app/auth.service");
 const passwordValidation = require("../../validation/app/password.validation");
@@ -35,113 +35,57 @@ const LOCK_TIME_MS = 15 * 60 * 1000;
 class passwordController {
     requestPasswordReset = async (request, response, nextFunction) => {
         try {
-            request.body.email = request.body.email.trim().toLowerCase();
-            const userData = await userModel.findOne({ email: request.body.email, is_deleted: deleteConstants.NOT_DELETED }, { password: 0 });
-            if (userData) {
+            const { error, value } = passwordValidation.validateForgotPassword(request.body);
+            const validationError = responseConstants.validatIonError(response, error);
+            if (validationError) return;
+            const userData = await userModel.findOne({ email: value.email, is_deleted: deleteConstants.NOT_DELETED }, { password: 0 });
+            if (userData && userData.status !== "suspended") {
                 await passwordService.requestPasswordReset(request, userData);
             }
+            // Same answer whether or not the account exists.
             return responseConstants.success(response, messageConstants.USER.RESET_PASSWORD_GENERIC, null, statusCodes.OK);
         } catch (error) {
             nextFunction(error);
         }
     };
-    checkPasswordResetToken = async (request, response, nextFunction) => {
-        try {
-            const { token } = request.query;
-            if (!token) {
-                return responseConstants.BadRequest(response, "Token is required on query params");
-            }
-            const resetDoc = await passwordResetModel.findOne({ tokenHash: token });
-            if (!resetDoc) {
-                return responseConstants.Forbidden(response, "This reset link is invalid or has expired. Please request a new one.");
-            }
-            return responseConstants.success(response, "Please reset the password.Before the token expiry", null, statusCodes.OK)
-
-        } catch (error) {
-            nextFunction(error)
-        }
-    }
 
     resetPassword = async (request, response, nextFunction) => {
         try {
-            const { error } = await passwordValidation.validateResetPassword(request.body);
+            const { error, value } = passwordValidation.validateResetPassword(request.body);
             const validationError = responseConstants.validatIonError(response, error);
             if (validationError) return;
-            const { token, newPassword } = request.body;
-            const tokenHash = helper.hashToken(token);
-            const resetDoc =
-                await passwordResetModel.findOne({ tokenHash });
-            if (!resetDoc) {
-                return responseConstants.BadRequest(response, messageConstants.USER.PASSWORD_RESET_LINK_INVALID, { canResend: true }, statusCodes.BAD_REQUEST);
+            const result = await passwordService.resetPassword(request, value);
+            if (!result.ok) {
+                return responseConstants.BadRequest(response, result.message, { valid: false, reason: result.reason, canResend: result.reason !== "WEAK_PASSWORD" }, statusCodes.BAD_REQUEST);
             }
-            const userData = await userModel.findById(resetDoc.userId);
-            if (!userData) {
-                return responseConstants.BadRequest(response, messageConstants.USER.USER_NOT_FOUND, null, statusCodes.BAD_REQUEST);
-            }
-            if (isPasswordSimilarToUserInfo(request?.body?.newPassword, {
-                fullName: userData.fullName,
-                email: userData.email,
-                phoneNumber: userData.phoneNumber
-            })) {
-                return responseConstants.BadRequest(response, 'Password must not be similar to your name, email address, or phone number.', null, statusCodes.BAD_REQUEST);
-            }
-            if (resetDoc.used) {
-                await createAuditLog({ req: request, userId: resetDoc.userId, action: auditLogConstants.PASSWORD_RESET_LINK_ALREADY_USED, entity: CollectionName.passwordresets, entityId: resetDoc._id });
-                return responseConstants.BadRequest(
-                    response, messageConstants.USER.PASSWORD_RESET_LINK_ALREADY_USED, { canResend: true },
-                    statusCodes.BAD_REQUEST
-                );
-            }
-            if (resetDoc.expiresAt < new Date()) {
-                await createAuditLog({ req: request, userId: resetDoc.userId, action: auditLogConstants.PASSWORD_RESET_LINK_EXPIRED, entity: CollectionName.passwordresets, entityId: resetDoc._id });
-                return responseConstants.BadRequest(response, messageConstants.USER.PASSWORD_RESET_LINK_EXPIRED, { canResend: true }, statusCodes.BAD_REQUEST);
-            }
-
-            await passwordService.resetPassword(
-                resetDoc,
-                userData,
-                newPassword
-            );
-
             await createAuditLog({
                 req: request,
-                userId: userData._id,
+                userId: result.userId,
                 action: auditLogConstants.PASSWORD_RESET_SUCCESS,
                 entity: CollectionName.users,
                 fromState: 'PASSWORD_SET',
                 toState: 'PASSWORD_RESET',
-                entityId: userData._id,
+                entityId: result.userId,
                 metadata: {
                     resetType: 'FORGOT_PASSWORD',
                     changedFields: ['password'],
                     passwordChanged: true,
                 },
             });
-            return responseConstants.success(
-                response,
-                messageConstants.USER.PASSWORD_RESET_SUCCESS,
-                null,
-                statusCodes.OK
-            );
-
+            return responseConstants.success(response, messageConstants.USER.PASSWORD_RESET_SUCCESS, null, statusCodes.OK);
         } catch (error) {
             nextFunction(error);
         }
     };
+
+    // "Is this link still usable?" — answered with 200 { valid, reason,
+    // message } so the reset page can show the right state (not an error toast).
     validateResetToken = async (request, response, nextFunction) => {
         try {
-            const { token } = request.query;
-            if (!token) {
-                return responseConstants.BadRequest(response, "token is required", null, statusCodes.BAD_REQUEST);
-            }
-            const result = await passwordService.validateResetToken(request, token);
-            if (!result.valid) {
-                return responseConstants.BadRequest(response, result.message, { valid: false, reason: result.reason }, statusCodes.BAD_REQUEST);
-            }
-            return responseConstants.success(response, "Reset link is valid.", { valid: true }, statusCodes.OK);
+            const result = await passwordService.validateResetToken(request, request.query?.token);
+            return responseConstants.success(response, result.valid ? "Reset link is valid." : result.message, { valid: result.valid, reason: result.valid ? "VALID" : result.reason }, statusCodes.OK);
         } catch (error) {
             nextFunction(error);
-
         }
     };
 
@@ -197,7 +141,7 @@ class passwordController {
                 await verificationModel.deleteOne({ userId: userData?._id });
             }
             const verifyData = await verificationModel.create({ userId: userData?._id, tokenHash, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) });
-            const subject = "Verification email";
+            const subject = `Verify your email for ${BRAND.NAME}`;
             const verifyUrl = `${configenv.BACKEND_URL}?token=${rawToken}`;
             const html = await verifyTemplate({ verifyUrl });
             sendEmail(userData?.email, subject, html);

@@ -73,7 +73,8 @@ class passwordValidation {
 
     static changePassword() {
         return Joi.object({
-            oldPassword: this.passwordRuleRequired,
+            // Only compared with the stored hash, so not held to today's rule.
+            oldPassword: Joi.string().max(128).required().messages({ 'string.empty': 'Current password is required', 'any.required': 'Current password is required' }),
             newPassword: this.passwordRuleRequired,
         })
     }
@@ -113,16 +114,42 @@ class passwordValidation {
         });
     }
 
+    // Shared by user + admin reset and the staff invitation (set password).
+    // Format errors read like any other bad link; the server-side token
+    // check decides used/expired/revoked.
     static resetPassword() {
         return Joi.object({
             token: Joi.string()
+                .trim()
+                .max(128)
                 .required()
                 .messages({
-                    'string.empty': 'Reset token is required.',
-                    'any.required': 'Reset token is required.'
+                    'string.empty': 'This link is invalid. Please request a new one.',
+                    'string.max': 'This link is invalid. Please request a new one.',
+                    'any.required': 'This link is invalid. Please request a new one.'
                 }),
             newPassword: this.passwordRuleRequired
         })
+    }
+
+    static forgotPassword() {
+        return Joi.object({
+            email: Joi.string()
+                .trim()
+                .lowercase()
+                .email({ tlds: { allow: false } })
+                .max(254)
+                .required()
+                .messages({
+                    'string.empty': 'Email is required',
+                    'any.required': 'Email is required',
+                    'string.email': 'Please enter a valid email address',
+                    'string.max': 'Please enter a valid email address',
+                }),
+        });
+    }
+    static validateForgotPassword(data) {
+        return this.forgotPassword().validate(data, { abortEarly: false });
     }
     static validateResetPassword(data) {
         return this.resetPassword().validate(data, { abortEarly: false });

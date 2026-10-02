@@ -1,9 +1,11 @@
 const mongoose = require('mongoose');
-const { ADMIN_ONLY_ROLES } = require("../constants/adminRoles.constants");
 const adminSchema = new mongoose.Schema(
     {
+        // 'admin' + isSuperAdmin = the Super Admin (created by config/db.js);
+        // everyone else is 'subadmin' (staff) and gets access from roleId.
         type: {
             type: String,
+            enum: ['admin', 'subadmin'],
             default: 'subadmin',
         },
         roleId: {

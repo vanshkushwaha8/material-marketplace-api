@@ -63,9 +63,14 @@ describe('submitReview eligibility', () => {
     await expect(reviewService.submitReview({ transactionId: TXN, userId: BUYER, body: { rating: 4 } })).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  test('someone not on the order is rejected', async () => {
+  test('someone not on the order gets 404 — the order is not revealed', async () => {
     transactionModel.findOne.mockResolvedValue(txn());
-    await expect(reviewService.submitReview({ transactionId: TXN, userId: STRANGER, body: { rating: 4 } })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(reviewService.submitReview({ transactionId: TXN, userId: STRANGER, body: { rating: 4 } })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  test('a stranger learns nothing about an ineligible order either (404, not 409)', async () => {
+    transactionModel.findOne.mockResolvedValue(txn({ disputed: true }));
+    await expect(reviewService.submitReview({ transactionId: TXN, userId: STRANGER, body: { rating: 4 } })).rejects.toMatchObject({ statusCode: 404 });
   });
 
   test('seller cannot rate themselves (buyer == seller)', async () => {

@@ -1,75 +1,46 @@
 const Joi = require("joi");
-const ADMIN_ONLY_ROLES = require("../../constants/adminRoles.constants");
+const { ASSIGNABLE_ADMIN_PERMISSIONS } = require("../../constants/rbac.constants");
+
+const objectId = (name) => Joi.string().pattern(/^[a-fA-F0-9]{24}$/).required().messages({
+    "string.empty": `${name} is required`,
+    "any.required": `${name} is required`,
+    "string.pattern.base": `Invalid ${name}`,
+});
+
+const roleFields = {
+    roleName: Joi.string().trim().min(2).max(50).required().messages({
+        "string.empty": "Role name is required",
+        "any.required": "Role name is required",
+    }),
+    description: Joi.string().trim().max(200).allow('').optional(),
+    // Only catalog keys; reserved (Super Admin) keys are not in the list.
+    permissions: Joi.array()
+        .items(Joi.string().valid(...ASSIGNABLE_ADMIN_PERMISSIONS).messages({ "any.only": "Unknown permission: {#value}" }))
+        .unique()
+        .min(1)
+        .required()
+        .messages({
+            "array.min": "Select at least one permission",
+            "any.required": "Select at least one permission",
+            "array.unique": "Duplicate permission",
+        }),
+};
+
 class RoleValidation {
-    static addSchema = Joi.object({
-        roleName: Joi.string()
-            .valid(...Object.values(ADMIN_ONLY_ROLES))
-            .optional()
-            .messages({
-                'any.only': `roleName must be one of: ${Object.values(ADMIN_ONLY_ROLES).join(', ')}`,
-            }),
-        permissionIds: Joi.array()
-            .items(
-                Joi.string()
-                    .pattern(/^[a-fA-F0-9]{24}$/)
-                    .required()
-                    .messages({
-                        "string.empty": "permissionId is required",
-                        "string.pattern.base":
-                            "Invalid permissionId ID format. Must be a valid MongoDB ObjectId",
-                    })
-            )
-            .min(1)
-            .required()
-            .messages({
-                "array.base": "permissionIds must be an array",
-                "array.min": "At least one permissionId is required",
-                "any.required": "permissionIds are required",
-            }),
-    });
-    static updateSchema = Joi.object({
-        _id: Joi.string()
-            .pattern(/^[a-fA-F0-9]{24}$/)
-            .required()
-            .messages({
-                "string.empty": "_id is required",
-                "string.pattern.base":
-                    "Invalid _id ID format. Must be a valid MongoDB ObjectId",
-            }),
-
-        roleName: Joi.string()
-            .valid(...Object.values(ADMIN_ONLY_ROLES))
-            .optional()
-            .messages({
-                'any.only': `roleName must be one of: ${Object.values(ADMIN_ONLY_ROLES).join(', ')}`,
-            }),
-
-        permissionIds: Joi.array()
-            .items(
-                Joi.string()
-                    .pattern(/^[a-fA-F0-9]{24}$/)
-                    .required()
-                    .messages({
-                        "string.empty": "permissionId is required",
-                        "string.pattern.base":
-                            "Invalid permissionId ID format. Must be a valid MongoDB ObjectId",
-                    })
-            )
-            .min(1)
-            .required()
-            .messages({
-                "array.base": "permissionIds must be an array",
-                "array.min": "At least one permissionId is required",
-                "any.required": "permissionIds are required",
-            }),
-    });
+    static addSchema = Joi.object(roleFields);
+    static updateSchema = Joi.object({ _id: objectId('_id'), ...roleFields });
+    static idSchema = Joi.object({ _id: objectId('_id') });
 
     static validateAdd(data) {
-        return this.addSchema.validate(data, { abortEarly: false });
+        return this.addSchema.validate(data, { abortEarly: false, stripUnknown: true });
     }
 
     static validateUpdate(data) {
-        return this.updateSchema.validate(data, { abortEarly: false });
+        return this.updateSchema.validate(data, { abortEarly: false, stripUnknown: true });
+    }
+
+    static validateId(data) {
+        return this.idSchema.validate(data, { abortEarly: false, stripUnknown: true });
     }
 }
 

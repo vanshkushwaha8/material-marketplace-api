@@ -1,8 +1,10 @@
 const swaggerJsdoc = require("swagger-jsdoc");
+const configenv = require("./config/env.config");
+const BRAND = require("./config/brand.config");
 const options = {
     definition: {
         openapi: "3.0.0",
-        info: { title: "Opalus API", version: "1.0.0" },
+        info: { title: `${BRAND.NAME} API`, version: "1.0.0" },
         components: {
             securitySchemes: {
                 bearerAuth: {
@@ -12,7 +14,8 @@ const options = {
                 },
             },
         },
-        servers: [{ url: "http://localhost:8000" }, { url: "http://192.168.0.145:8000" }, { url: "https://opalusapi.etrueconcept.com" }],
+        // The API this instance actually serves (BACKEND_URL), plus local dev.
+        servers: [...new Set([configenv.BACKEND_URL, `http://localhost:${configenv.PORT || 5200}`].filter(Boolean))].map((url) => ({ url })),
     },
     apis: ["./src/swagger-docs/app/**/*.js", "./src/swagger-docs/admin/**/*.js", "./src/swagger-docs/health/**/*.js", "./src/swagger-docs/upload/**/*.js"],
 };

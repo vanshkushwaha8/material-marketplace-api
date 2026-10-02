@@ -6,6 +6,7 @@ const configenv = require("./env.config")
 const loggerInfo = require("../logger/info.logger");
 const userConsentModel = require("../model/userconsent.model");
 const userModel = require("../model/user.model");
+const passwordResetModel = require("../model/passwordReset.model");
 require('dotenv').config();
 const url = configenv.MONGODB_URL + configenv.MONGODB_NAME;
 const dbName = configenv.MONGODB_NAME;
@@ -28,6 +29,13 @@ const connectDB = async () => {
                 "Failed to sync user indexes — likely a pre-existing duplicate/case-variant email needs manual resolution:",
                 indexError
             );
+        }
+        try {
+            // Reset/invitation tokens: TTL now keeps records 7 days past
+            // expiry (housekeeping only — validity is checked on every use).
+            await passwordResetModel.syncIndexes();
+        } catch (indexError) {
+            logger.error("Failed to sync passwordresets indexes:", indexError);
         }
         const alreadyExist = await adminModel.findOne({
             type: "admin",
