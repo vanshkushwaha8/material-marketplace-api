@@ -1,3 +1,4 @@
+require('../../model/admin.model'); // registers `admins` for the populate() of admin refs below
 const mongoose = require('mongoose');
 const userModel = require('../../model/user.model');
 const storeProfileModel = require('../../model/storeProfile.model');
@@ -59,7 +60,7 @@ async function list(filters) {
 
   const query = {};
   if (!includeDeleted) query.is_deleted = deleteConstants.NOT_DELETED;
-  // Staff accounts (ComplianceOfficer) aren't marketplace users.
+  // Only the marketplace roles are listed here (admins live in `admins`).
   query.userType = userType || { $in: [userTypeConstants.Buyer, userTypeConstants.Seller] };
   if (sellerType) query.sellerType = sellerType;
   if (status) query.status = status;

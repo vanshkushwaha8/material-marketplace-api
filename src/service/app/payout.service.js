@@ -242,7 +242,7 @@ async function retryPayout({ payoutId, sellerId, req }) {
   if (!mongoose.Types.ObjectId.isValid(payoutId)) throw new PayoutError('Invalid payout id', 404);
   const payout = await payoutModel.findOne({ _id: payoutId, is_deleted: deleteConstants.NOT_DELETED });
   if (!payout) throw new PayoutError('Payout not found', 404);
-  if (String(payout.seller) !== String(sellerId)) throw new PayoutError('Not your payout', 403);
+  if (String(payout.seller) !== String(sellerId)) throw new PayoutError('Payout not found', 404); // ownership: not revealed
   // Seller may only kick off a payout that was waiting on THEIR bank
   // verification. A provider failure needs an admin retry (REQUIRES_ADMIN_ACTION).
   if (payout.status !== PAYOUT_STATES.PAYOUT_ELIGIBLE) {

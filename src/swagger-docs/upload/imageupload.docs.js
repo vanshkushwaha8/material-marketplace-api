@@ -3,8 +3,8 @@
  * tags:
  *   - name: Upload
  *     description: >
- *       Generic file-upload endpoints used ahead of KYC document saves and profile-image
- *       updates. Accepts images (jpeg/png/jpg/gif/webp/avif) or PDFs, 1KB–50MB.
+ *       Generic file-upload endpoints used ahead of listing media, store images and
+ *       profile-image updates. Accepts images (jpeg/png/jpg/gif/webp/avif) or PDFs, 1KB–50MB.
  */
 
 /**
@@ -14,9 +14,8 @@
  *     tags: [Upload]
  *     summary: Upload a single file
  *     description: >
- *       Multipart field name must be `tempImage`. Accepts either a normal JWT Bearer token,
- *       or — for the KYC mobile hand-off flow — a `Bearer relay:<relayToken>` header in
- *       place of a login session, validated against an active mobile-relay record.
+ *       Multipart field name must be `tempImage`. The file lands in temporary storage and
+ *       is only attached to a record by an authenticated save call.
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -44,9 +43,9 @@
  *                   type: string
  *                   description: >
  *                     The generated server filename itself — NOT an object. Use this exact
- *                     string as the `serverFile` value in subsequent KYC document /
- *                     progress-step-complete / profile-update calls.
- *                   example: "1753000000000___passport_front.webp"
+ *                     string as the file reference in the subsequent listing / store /
+ *                     profile-update call.
+ *                   example: "1753000000000___cement_bag.webp"
  *       400:
  *         description: No file provided, more than one file provided, or file failed validation (type/size).
  *       500:

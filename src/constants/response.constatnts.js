@@ -15,10 +15,13 @@ const responseConstants = {
 
     });
   },
-  unauthorized: (res, message = "Unauthorized Access",status = 401) => {
+  // 401 (not authenticated) by default; also used with 403 by older call
+  // sites. Same envelope as every other response.
+  unauthorized: (res, message = "Authentication required", status = 401) => {
     return res.status(status).json({
-      success: false,
-      message
+      status: false,
+      message,
+      data: null
     });
   },
   BadRequest: (res, message, data = null, status = 400) => {
@@ -39,7 +42,7 @@ const responseConstants = {
     }
     return null;
   },
-    Forbidden : (res, message, data = null, status = 403) => {
+  Forbidden: (res, message = "You do not have permission to perform this action", data = null, status = 403) => {
     return res.status(status).json({
       status: false,
       message,

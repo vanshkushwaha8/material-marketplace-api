@@ -2,7 +2,9 @@ const helper = require('../../helper/helper');
 const auditLogModel = require('../../model/auditLogs.model');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const { getCategoryForAction, getActionsForCategory, isHighStakesAction,} = require('../../constants/auditLogCategories');
-const { ADMIN_ROLES } = require('../../constants/adminRoles.constants');
+const roleModel = require('../../model/role.model');
+const deleteConstants = require('../../constants/delete.constants');
+const userTypeConstants = require('../../constants/usertype.constants');
 const { toCSV, toPDF, formatStateChange, toRiskLabel } = require('../../utils/auditLogExport.util');
 const UPPERCASE_WORDS = new Set([
   'KYC', '2FA', 'OTP', 'SMS', 'API', 'URL', 'ID', 'KYB', 'TOTP', 'PIN'
@@ -39,12 +41,19 @@ const EXPORT_MAX_ROWS = 50000;
 
 const auditLogService = {};
 
-auditLogService.getActionOptions = () => {
-  return getAllActionOptions();
+// Only actions that actually occur in the log (the constants file still
+// carries many retired, investment-era actions nobody can filter for).
+auditLogService.getActionOptions = async () => {
+  const present = new Set(await auditLogModel.distinct('action'));
+  return getAllActionOptions().filter((o) => present.has(o.value));
 };
 
-auditLogService.getRoleOptions = () => {
-  return Object.values(ADMIN_ROLES).map(value => ({ value, label: value }));
+// Actor "roles" as they appear on audit rows (see buildBaseAggregate):
+// marketplace roles, 'Admin' for the Super Admin, and each staff role name.
+auditLogService.getRoleOptions = async () => {
+  const staffRoles = await roleModel.find({ is_deleted: deleteConstants.NOT_DELETED }).select('roleName').sort({ roleName: 1 }).lean();
+  const names = [userTypeConstants.Buyer, userTypeConstants.Seller, 'Admin', ...staffRoles.map((r) => r.roleName)];
+  return [...new Set(names)].map((value) => ({ value, label: value === 'Admin' ? 'Super Admin' : value }));
 };
 
 const buildBaseAggregate = (request) => {
@@ -174,7 +183,8 @@ const buildBaseAggregate = (request) => {
     aggregateArray.push({
       $match: {
         $or: roles.map(r => ({
-          'userDetail.userType': { $regex: r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' }
+          // exact role name (Buyer / Seller / Admin / a staff role name)
+          'userDetail.userType': { $regex: `^${r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' }
         }))
       }
     });

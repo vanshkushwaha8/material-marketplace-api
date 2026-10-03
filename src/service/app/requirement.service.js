@@ -73,14 +73,17 @@ async function getResponses({ requirementId, buyerId }) {
     .populate('seller', 'fullName sellerType storeName').sort({ createdAt: -1 }).lean();
 }
 
+// Owner-only; only an open requirement can be closed.
 async function closeRequirement({ requirementId, buyerId }) {
-  const requirement = await requirementModel.findOneAndUpdate(
-    { _id: requirementId, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED },
+  if (!mongoose.Types.ObjectId.isValid(requirementId)) throw new RequirementError('Requirement not found', 404);
+  const owned = await requirementModel.findOne({ _id: requirementId, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED }).select('status').lean();
+  if (!owned) throw new RequirementError('Requirement not found', 404);
+  if (!REQUIREMENT_OPEN_STATES.includes(owned.status)) throw new RequirementError(`This requirement is already ${owned.status.toLowerCase().replace(/_/g, ' ')}`, 409);
+  return requirementModel.findOneAndUpdate(
+    { _id: requirementId, buyer: buyerId, status: { $in: REQUIREMENT_OPEN_STATES } },
     { $set: { status: REQUIREMENT_STATES.CLOSED } },
     { new: true }
   );
-  if (!requirement) throw new RequirementError('Requirement not found', 404);
-  return requirement;
 }
 
 module.exports = { RequirementError, createRequirement, myRequirements, browseOpenRequirements, respondToRequirement, getResponses, closeRequirement };

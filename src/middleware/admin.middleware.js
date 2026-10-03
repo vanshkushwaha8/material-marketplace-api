@@ -6,15 +6,14 @@ const CollectionName = require("../constants/auditLogcollection.constant");
 const { createAuditLogAdmin } = require("../helper/audit.helper");
 const statusConstants = require("../constants/status.constants");
 const adminModel = require("../model/admin.model");
-const permissionModel = require("../model/permission.model");
 const statusCodes = require("../constants/httpConstants");
 const mongoose = require("mongoose");
 const logger = require("../logger/error.logger");
 const sessionModel = require("../model/session.model");
-const roleModel = require("../model/role.model");
 const deleteConstants = require("../constants/delete.constants");
 const helper = require('../helper/helper');
 const { clearAdminAuthCookie } = require('../helper/authCookie');
+const { REALMS } = require('../helper/authorization.helper');
 const secretKey = configenv.SECRET_KEY;
 const INACTIVITY_MS = 15 * 60 * 1000;
 const getClientIp = (request) =>
@@ -92,6 +91,8 @@ const adminMiddleWare = async (request, response, nextFunction) => {
         await adminModel.findByIdAndUpdate(adminData._id, { inactivityDate: new Date() });
         adminData.resData = { token };
         request.auth = adminData;
+        request.session = sessionData;
+        request.authRealm = REALMS.ADMIN;
         return nextFunction();
 
     } catch (error) {

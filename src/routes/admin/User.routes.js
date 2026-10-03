@@ -2,11 +2,11 @@ const express = require('express');
 const adminMiddleWare = require('../../middleware/admin.middleware');
 const adminUserController = require('../../controller/admin/user.controller');
 const { authapiLimiter } = require('../../utils/rateLimiter.utils');
-const permissionMiddleware = require('../../middleware/permission.middleware');
-const PERMISSIONSCONSTANTS = require('../../constants/permission.constant');
+const { authorize } = require('../../middleware/authorize.middleware');
+const { ADMIN_PERMISSIONS: A } = require('../../constants/rbac.constants');
 const router = express.Router();
 
-const view = [authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), adminMiddleWare, permissionMiddleware(PERMISSIONSCONSTANTS.USERMANAGEMENT.USER_VIEW)];
+const view = [authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), adminMiddleWare, authorize(A.USER_READ)];
 
 router.get('/users', ...view, adminUserController.list);
 router.get('/users/:id', ...view, adminUserController.getOne);
@@ -21,7 +21,7 @@ router.patch(
   '/users/:id/status',
   authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }),
   adminMiddleWare,
-  permissionMiddleware(PERMISSIONSCONSTANTS.USERMANAGEMENT.USER_STATUS_CHANGE),
+  authorize(A.USER_MANAGE),
   adminUserController.updateStatus
 );
 

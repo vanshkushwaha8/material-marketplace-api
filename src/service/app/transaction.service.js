@@ -35,7 +35,8 @@ async function getOwned(transactionId, userId) {
     const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
     if (!txn) throw new TransactionError('Transaction not found', 404);
     const role = roleOf(txn, userId);
-    if (!role) throw new TransactionError('You are not a party to this transaction', 403);
+    // Same answer as a missing transaction — a non-party must not learn it exists.
+    if (!role) throw new TransactionError('Transaction not found', 404);
     return { txn, role };
 }
 
@@ -292,14 +293,27 @@ async function hasRecentActivePayment(transactionId) {
 // payout provider) can proceed; REFUND leaves the money side to the actual
 // admin-initiated-refund flow (payment.service.js#initiateAdminRefund),
 // this only unblocks/records the transaction-side outcome.
-async function resolveDispute({ transactionId, adminId, resolution, note, req }) {
-    // Kept for the existing admin endpoint; the actual work (refund through
-    // the provider, or commission + release) is the admin escrow service.
+// dispute:resolve covers DISPUTES only. Releasing/refunding any other
+// payment needs payment:release / payment:refund (admin payment actions) —
+// otherwise this endpoint would be a way around those permissions.
+const DISPUTE_RESOLVABLE_ESCROW = ['DISPUTED', 'ADMIN_REVIEW'];
+
+async function resolveDispute({ transactionId, adminId, resolution, note, idempotencyKey = null, req }) {
     if (!['RELEASE', 'REFUND'].includes(resolution)) throw new TransactionError('resolution must be RELEASE or REFUND', 400);
+    if (!note || String(note).trim().length < 5) throw new TransactionError('Give a reason of at least 5 characters (recorded in the audit log)', 400);
+    if (!mongoose.Types.ObjectId.isValid(transactionId)) throw new TransactionError('Transaction not found', 404);
+    const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED }).select('status disputed escrowStatus').lean();
+    if (!txn) throw new TransactionError('Transaction not found', 404);
+    const underDispute = txn.disputed === true || txn.status === TRANSACTION_STATES.DISPUTED;
+    if (!underDispute || (txn.escrowStatus && !DISPUTE_RESOLVABLE_ESCROW.includes(txn.escrowStatus))) {
+        throw new TransactionError('This transaction has no open dispute to resolve', 409);
+    }
+    // The money movement itself (provider refund, or commission + release)
+    // is the admin escrow service — same state machine, ledger and audit.
     const adminEscrow = require('../admin/escrow.service');
     const result = await adminEscrow.performAction({
         transactionId, action: resolution === 'RELEASE' ? 'APPROVE_RELEASE' : 'REFUND',
-        reason: note || `Dispute resolved: ${resolution}`, adminId, req,
+        reason: `Dispute resolved (${resolution}): ${String(note).trim()}`, idempotencyKey, adminId, req,
     });
     return result.transaction;
 }

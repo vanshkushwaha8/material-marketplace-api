@@ -1,14 +1,25 @@
 const mongoose = require('mongoose');
-const  ADMIN_ONLY_ROLES  = require("../constants/adminRoles.constants");
+const { ASSIGNABLE_ADMIN_PERMISSIONS } = require('../constants/rbac.constants');
+
+// A staff role: a name plus permission keys from the code catalog
+// (constants/rbac.constants.js). The Super Admin is not a role document.
 const roleSchema = new mongoose.Schema(
     {
-        permissionIds: [{
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "permissions"
-        }],
         roleName: {
             type: String,
-            enum: Object.values(ADMIN_ONLY_ROLES),
+            trim: true,
+            required: true,
+            maxlength: 50,
+        },
+        description: {
+            type: String,
+            trim: true,
+            default: '',
+            maxlength: 200,
+        },
+        permissions: {
+            type: [{ type: String, enum: ASSIGNABLE_ADMIN_PERMISSIONS }],
+            default: [],
         },
         status: {
             type: String,
@@ -25,5 +36,6 @@ const roleSchema = new mongoose.Schema(
         timestamps: true
     }
 );
+roleSchema.index({ is_deleted: 1, roleName: 1 });
 
 module.exports = roleSchema;

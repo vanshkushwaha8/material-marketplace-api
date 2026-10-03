@@ -14,7 +14,7 @@ class auditLogController {
 
     getActionOptions = async (request, response, nextFunction) => {
         try {
-            const data = auditLogService.getActionOptions();
+            const data = await auditLogService.getActionOptions();
             return responseConstants.success(response, "action options fetched successfully", data, statusCodes.OK);
         } catch (error) {
             nextFunction(error);
@@ -23,7 +23,7 @@ class auditLogController {
 
     getRoleOptions = async (request, response, nextFunction) => {
         try {
-            const data = auditLogService.getRoleOptions();
+            const data = await auditLogService.getRoleOptions();
             return responseConstants.success(response, "role options fetched successfully", data, statusCodes.OK);
         } catch (error) {
             nextFunction(error);

@@ -1,5 +1,5 @@
 {
-  "name": "opalus-backend",
+  "name": "build-material-backend",
   "version": "1.0.0",
   "main": "app.js",
   "scripts": {
@@ -7,8 +7,9 @@
     "dev": "nodemon src/app.js",
     "build": "echo Build completed - no compilation required",
     "test": "jest --runInBand --coverage",
-    "seed:roles": "node scripts/runRoleSeed.js",
-    "migrate:escrow": "node scripts/backfillEscrowStatus.js"
+    "migrate:escrow": "node scripts/backfillEscrowStatus.js",
+    "migrate:rbac": "node scripts/migrateRbac.js",
+    "migrate:tokens": "node scripts/migrateAccountTokens.js"
   },
   "author": "",
   "license": "ISC",

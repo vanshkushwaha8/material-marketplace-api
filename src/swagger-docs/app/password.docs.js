@@ -56,27 +56,6 @@
 
 /**
  * @openapi
- * /api/v1/check-password-reset:
- *   get:
- *     tags: [Password]
- *     summary: Check whether a password-reset token exists
- *     security: []
- *     parameters:
- *       - in: query
- *         name: token
- *         required: true
- *         schema: { type: string }
- *     responses:
- *       200:
- *         description: Token found — proceed to reset the password before it expires.
- *       400:
- *         description: Token is required on query params.
- *       403:
- *         description: This reset link is invalid or has expired.
- */
-
-/**
- * @openapi
  * /api/v1/validate-reset-token:
  *   get:
  *     tags: [Password]
@@ -89,7 +68,10 @@
  *         schema: { type: string }
  *     responses:
  *       200:
- *         description: Reset link is valid.
+ *         description: >
+ *           Always 200 (a status query, not an action). `data.valid` is false with
+ *           `data.reason` INVALID | EXPIRED | USED | REVOKED and a user-facing `message`
+ *           when the link can't be used.
  *         content:
  *           application/json:
  *             schema:
@@ -101,10 +83,7 @@
  *                   type: object
  *                   properties:
  *                     valid: { type: boolean, example: true }
- *       400:
- *         description: >
- *           Token is invalid, already used, or expired — response includes `valid` (false),
- *           `reason`, and `canResend` where applicable.
+ *                     reason: { type: string, enum: [VALID, INVALID, EXPIRED, USED, REVOKED] }
  */
 
 /**

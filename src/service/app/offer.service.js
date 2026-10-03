@@ -37,6 +37,13 @@ async function createOffer({ buyerId, body, req }) {
   if (!mongoose.Types.ObjectId.isValid(body.listing)) {
     throw new OfferError('Invalid listing id');
   }
+  // Ownership: an offer can only be linked to one of the buyer's own,
+  // active projects.
+  if (body.project) {
+    const projectModel = require('../../model/project.model');
+    const ownProject = mongoose.Types.ObjectId.isValid(body.project) && await projectModel.exists({ _id: body.project, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED });
+    if (!ownProject) throw new OfferError('Project not found', 404);
+  }
 
   const listing = await materialListingModel.findOne({
     _id: body.listing,
@@ -172,7 +179,7 @@ async function respondToOffer({ userId, offerId, action, amount, message, req })
   if (!offer) throw new OfferError('Offer not found', 404);
 
   const role = roleOf(offer, userId);
-  if (!role) throw new OfferError('You are not a party to this offer', 403);
+  if (!role) throw new OfferError('Offer not found', 404); // never confirm someone else's offer exists
   if (OFFER_TERMINAL_STATES.includes(offer.status)) {
     throw new OfferError(`This offer is already ${offer.status.toLowerCase()}`, 409);
   }

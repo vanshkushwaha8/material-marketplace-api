@@ -54,7 +54,7 @@ async function loadPayableTransaction(transactionId, buyerId) {
   if (!mongoose.Types.ObjectId.isValid(transactionId)) throw new PaymentError('Invalid transaction id', 404);
   const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
   if (!txn) throw new PaymentError('Transaction not found', 404);
-  if (String(txn.buyer) !== String(buyerId)) throw new PaymentError('You are not the buyer on this transaction', 403);
+  if (String(txn.buyer) !== String(buyerId)) throw new PaymentError('Transaction not found', 404); // ownership: not revealed
   if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
     throw new PaymentError(`Cannot pay for a transaction in status ${txn.status}`, 409);
   }
@@ -183,7 +183,7 @@ function buildOrderResponse(payment, txn) {
 async function verifyPayment({ buyerId, providerOrderId, providerPaymentId, signature, req }) {
   const payment = await paymentModel.findOne({ providerOrderId, is_deleted: deleteConstants.NOT_DELETED });
   if (!payment) throw new PaymentError('Payment order not found', 404);
-  if (String(payment.buyer) !== String(buyerId)) throw new PaymentError('You are not the buyer on this payment', 403);
+  if (String(payment.buyer) !== String(buyerId)) throw new PaymentError('Payment order not found', 404); // ownership: not revealed
 
   if (payment.status === PAYMENT_STATES.SUCCESS) {
     return { payment, alreadyProcessed: true }; // idempotent — buyer's browser retried the callback

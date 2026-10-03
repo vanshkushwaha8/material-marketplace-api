@@ -104,9 +104,8 @@ const setupApp = () => {
     "../public/profile",
     "../public/adminProfile",
     "../public/images",
-    "../public/projectDocuments",
-    "../public/kycDocuments",
-    "../public/investmentDocuments",
+    // kycDocuments / investmentDocuments / projectDocuments (investment-era,
+    // incl. identity documents) are deliberately NOT served any more.
     "../public/documents",
     "../public/admin",
     "../public/cms",
@@ -359,3 +358,4 @@ const startServer = async () => {
 
 
 startServer();
+module.exports = app; // for HTTP tests (no listen/DB when NODE_ENV=test)

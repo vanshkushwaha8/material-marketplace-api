@@ -1,3 +1,5 @@
+const BRAND = require('../../config/brand.config');
+const { verificationCodeEmail } = require('../../templates/accountEmails');
 const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
 const bcrypt = require('bcryptjs');
@@ -40,37 +42,13 @@ function verifyPendingToken(token) {
   return jwt.verify(token, secret);
 }
 async function sendEmailOtp(email, otp) {
-  const subject = `Your ${configenv.TOTP_ISSUER || 'Platform'} verification code`;
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <body style="font-family:Arial,sans-serif;background:#f4f4f4;padding:30px;">
-      <div style="max-width:480px;margin:auto;background:#fff;border-radius:8px;
-                  padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08);">
-        <h2 style="margin:0 0 8px;color:#1a1a1a;">Your verification code</h2>
-        <p style="color:#555;margin:0 0 24px;">
-          Use the code below to complete verification.
-          It expires in <strong>10 minutes</strong>. Do not share it with anyone.
-        </p>
-        <div style="text-align:center;margin:24px 0;">
-          <span style="display:inline-block;font-size:36px;font-weight:700;
-                       letter-spacing:10px;color:#1a1a1a;background:#f0f4ff;
-                       padding:16px 32px;border-radius:6px;">
-            ${otp}
-          </span>
-        </div>
-        <p style="color:#999;font-size:12px;margin:24px 0 0;">
-          If you did not request this code, you can safely ignore this email.
-        </p>
-      </div>
-    </body>
-    </html>
-  `;
+  const subject = `Your ${BRAND.NAME} verification code`;
+  const html = verificationCodeEmail({ otp });
   await sendEmail(email, subject, html);
 }
 const twofaService = {};
 twofaService.provisionTotp = async (user) => {
-  const issuer = configenv.TOTP_ISSUER || 'Platform';
+  const issuer = configenv.TOTP_ISSUER || BRAND.NAME; // label shown in authenticator apps
   const secret = speakeasy.generateSecret({
     name: `${issuer} (${user.email})`,
     issuer: issuer,

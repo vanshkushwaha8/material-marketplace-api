@@ -5,7 +5,7 @@
  *     description: >
  *       Manage sub-admin (staff) accounts on the admin console. All endpoints except
  *       /subadmin/passwordset require a valid admin bearer session and a completed
- *       2FA check, and are gated by RBAC permission (PERMISSIONSCONSTANTS.SUBADMIN.*).
+ *       2FA check, and are restricted to the Super Admin (reserved permission staff:manage).
  */
 
 /**
@@ -17,7 +17,7 @@
  *     description: >
  *       Creates a sub-admin account in a pending state and emails them an invitation
  *       link (valid 24h) to set their password via PUT /subadmin/passwordset.
- *       Requires permission SUBADMIN.ADMIN_ADD.
+ *       Super Admin only (staff:manage).
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -62,7 +62,7 @@
  *       401:
  *         description: Unauthorized / 2FA not verified.
  *       403:
- *         description: Forbidden — missing SUBADMIN.ADMIN_ADD permission.
+ *         description: Forbidden — Super Admin only (staff:manage).
  *       409:
  *         description: Email already exists.
  */
@@ -73,7 +73,7 @@
  *   put:
  *     tags: [Admin Sub-Admin]
  *     summary: Update a sub-admin
- *     description: Requires permission SUBADMIN.ADMIN_EDIT. Role changes are audit-logged with the actor.
+ *     description: Super Admin only (staff:manage). Role changes are audit-logged with the actor.
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -120,7 +120,7 @@
  *       401:
  *         description: Unauthorized / 2FA not verified.
  *       403:
- *         description: Forbidden — missing SUBADMIN.ADMIN_EDIT permission.
+ *         description: Forbidden — Super Admin only (staff:manage).
  *       404:
  *         description: Sub-admin not found.
  *       409:
@@ -133,7 +133,7 @@
  *   get:
  *     tags: [Admin Sub-Admin]
  *     summary: List sub-admins
- *     description: Paginated, searchable list of sub-admin accounts (excludes the super admin). Requires permission SUBADMIN.ADMIN_VIEW.
+ *     description: Paginated, searchable list of sub-admin accounts (excludes the super admin). Super Admin only (staff:manage).
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -167,19 +167,19 @@
  *       401:
  *         description: Unauthorized / 2FA not verified.
  *       403:
- *         description: Forbidden — missing SUBADMIN.ADMIN_VIEW permission.
+ *         description: Forbidden — Super Admin only (staff:manage).
  */
 
 /**
  * @openapi
  * /api/admin/v1/subadmin/resend:
- *   get:
+ *   post:
  *     tags: [Admin Sub-Admin]
  *     summary: Resend a sub-admin's invitation
  *     description: >
  *       Re-sends the invite email with a fresh 24h token, provided the sub-admin
  *       hasn't already accepted and no active invitation is currently pending.
- *       Requires permission SUBADMIN.ADMIN_ADD.
+ *       Super Admin only (staff:manage).
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -204,7 +204,7 @@
  *       401:
  *         description: Unauthorized / 2FA not verified.
  *       403:
- *         description: Forbidden — missing SUBADMIN.ADMIN_ADD permission.
+ *         description: Forbidden — Super Admin only (staff:manage).
  *       404:
  *         description: Sub-admin not found.
  */
@@ -259,7 +259,7 @@
  *   delete:
  *     tags: [Admin Sub-Admin]
  *     summary: Delete (soft-delete) a sub-admin
- *     description: Requires permission SUBADMIN.ADMIN_DELETE. The super admin account cannot be deleted.
+ *     description: Super Admin only (staff:manage). The super admin account cannot be deleted.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -284,7 +284,7 @@
  *       401:
  *         description: Unauthorized / 2FA not verified.
  *       403:
- *         description: Forbidden — missing SUBADMIN.ADMIN_DELETE permission, or attempting to delete the super admin.
+ *         description: Forbidden — Super Admin only (staff:manage).
  *       404:
  *         description: Sub-admin not found.
  */
@@ -292,10 +292,10 @@
 /**
  * @openapi
  * /api/admin/v1/subadmin/status:
- *   get:
+ *   patch:
  *     tags: [Admin Sub-Admin]
  *     summary: Toggle a sub-admin's active/inactive status
- *     description: Flips status between active and inactive. Requires permission SUBADMIN.ADMIN_STATUS_CHANGE.
+ *     description: Flips status between active and inactive. Super Admin only (staff:manage).
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -320,7 +320,7 @@
  *       401:
  *         description: Unauthorized / 2FA not verified.
  *       403:
- *         description: Forbidden — missing SUBADMIN.ADMIN_STATUS_CHANGE permission.
+ *         description: Forbidden — Super Admin only (staff:manage).
  *       404:
  *         description: Sub-admin not found.
  */

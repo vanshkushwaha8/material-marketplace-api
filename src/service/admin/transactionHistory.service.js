@@ -91,25 +91,4 @@ async function list({ page = 1, limit = 20, search, status, escrowStatus, from, 
   return { getData, count, page: pageNum, limit: pageLimit };
 }
 
-// Full detail + timeline for the admin transaction-detail screen.
-async function getOne(transactionId) {
-  if (!mongoose.Types.ObjectId.isValid(transactionId)) {
-    const err = new Error('Invalid transaction id'); err.statusCode = 404; throw err;
-  }
-  const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED })
-    .populate('listing', 'title unit images')
-    .populate('buyer', 'fullName email phone')
-    .populate('seller', 'fullName email phone')
-    .populate('offer')
-    .lean();
-  if (!txn) { const err = new Error('Transaction not found'); err.statusCode = 404; throw err; }
-
-  const [payment, payout] = await Promise.all([
-    paymentModel.findOne({ transaction: txn._id }).lean(),
-    payoutModel.findOne({ transaction: txn._id }).lean(),
-  ]);
-
-  return { ...txn, payment, payout };
-}
-
-module.exports = { list, getOne };
+module.exports = { list };

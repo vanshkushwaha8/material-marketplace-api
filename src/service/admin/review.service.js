@@ -1,3 +1,4 @@
+require('../../model/admin.model'); // registers `admins` for the populate() of admin refs below
 const mongoose = require('mongoose');
 const reviewModel = require('../../model/review.model');
 const userModel = require('../../model/user.model');

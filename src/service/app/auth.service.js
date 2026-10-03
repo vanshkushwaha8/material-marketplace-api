@@ -9,10 +9,11 @@ const auditLogConstants = require("../../constants/auditLogConstants");
 const userStatusConstants = require("../../constants/user.constants")
 const statusConstants = require("../../constants/status.constants")
 const deleteConstants = require("../../constants/delete.constants")
+const { accessFor, describeAccess } = require('../../helper/authorization.helper');
 const userTypeConstants = require("../../constants/usertype.constants")
 const path = require('path');
 const sendEmail = require("../../helper/sendVerificationEmail");
-const emailTemplateImage = require("../../config/template");
+const BRAND = require('../../config/brand.config');
 const configenv = require('../../config/env.config');
 const otpModel = require('../../model/otp.model');
 const verificationModel = require('../../model/verification.model');
@@ -169,7 +170,7 @@ authService.register = async (request) => {
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = helper.hashToken(rawToken);
     await verificationModel.create({ userId: userData?._id, tokenHash, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) });
-    const subject = "Verification email"
+    const subject = `Verify your email for ${BRAND.NAME}`
     const verifyUrl = `${configenv.BACKEND_URL}?token=${rawToken}`;
     const html = await verifyTemplate({ verifyUrl });
     sendEmail(userData?.email, subject, html);
@@ -192,7 +193,7 @@ authService.login = async (request, userData) => {
         request.socket.remoteAddress ||
         request.ip;
     const hashToken = await helper.hashToken(token)
-    await sessionModel.create({ userId: userData?._id, token: hashToken, ipAddress: ipAddress, mfaVerified: true })
+    await sessionModel.create({ userId: userData?._id, token: hashToken, ipAddress: ipAddress, userAgent: String(request?.headers?.['user-agent'] || '').slice(0, 300), mfaVerified: true })
     const rounds = bcrypt.getRounds(userData?.password);
     if (request?.body?.password && rounds < configenv.COST_FACTOR) {
         const password = await bcrypt.hash(request.body.password, configenv.COST_FACTOR);
@@ -524,26 +525,67 @@ authService.getProfileConsents = async (request) => {
     return response;
 
 };
+// What must be settled before an account can be deleted — money and
+// stock must never be left attached to a deleted account.
+authService.deletionBlockers = async (userId) => {
+    const transactionModel = require('../../model/transaction.model');
+    const payoutModel = require('../../model/payout.model');
+    const { TRANSACTION_TERMINAL_STATES } = require('../../constants/transaction.constants');
+    const { PAYOUT_STATES } = require('../../constants/payout.constants');
+    const [openOrders, pendingPayouts] = await Promise.all([
+        transactionModel.countDocuments({
+            $or: [{ buyer: userId }, { seller: userId }],
+            status: { $nin: TRANSACTION_TERMINAL_STATES },
+            is_deleted: deleteConstants.NOT_DELETED,
+        }),
+        payoutModel.countDocuments({ seller: userId, status: { $ne: PAYOUT_STATES.PAID }, is_deleted: { $ne: deleteConstants.DELETED } }),
+    ]);
+    const blockers = [];
+    if (openOrders) blockers.push(`${openOrders} order${openOrders === 1 ? '' : 's'} still in progress (pay, complete, cancel or resolve ${openOrders === 1 ? 'it' : 'them'} first)`);
+    if (pendingPayouts) blockers.push(`${pendingPayouts} payout${pendingPayouts === 1 ? '' : 's'} not yet paid to you`);
+    return blockers;
+};
+
+// Self-service account deletion (soft delete). Refuses while orders or
+// payouts are open; otherwise withdraws everything the account still has
+// live on the marketplace and signs it out everywhere.
 authService.delete = async (request) => {
     const userId = request?.auth?._id;
-    const user = await userModel.findById(userId);
-    await helper.deleteSession(request?.auth?._id)
-    if (user?.profilePicture && user.profilePicture.file) {
-        const profilePicturePath = path.join('public', 'profilePicture', user.profilePicture.file);
-        if (fs.existsSync(profilePicturePath)) {
-            fs.unlink(profilePicturePath, (err) => {
-                if (err) logger.error(`Failed to delete profile picture image: ${err.message}`, { message: err.message, stack: err.stack });
-
-            });
-        }
+    const blockers = await authService.deletionBlockers(userId);
+    if (blockers.length) {
+        throw Object.assign(new Error(`Your account can't be deleted yet: ${blockers.join('; ')}.`), { statusCode: 409, details: { blockers } });
     }
-    const data = await userModel.findByIdAndUpdate(
-        { _id: new mongoose.Types.ObjectId(request?.auth?._id) },
-        { is_deleted: "1" },
-        { new: true }
-    );
+    const materialListingModel = require('../../model/materialListing.model');
+    const offerModel = require('../../model/offer.model');
+    const requirementModel = require('../../model/requirement.model');
+    const { LISTING_STATES } = require('../../constants/materialListing.constants');
+    const { OFFER_STATES } = require('../../constants/offer.constants');
+    const { REQUIREMENT_STATES, REQUIREMENT_OPEN_STATES } = require('../../constants/requirement.constants');
 
+    // Seller: take every listing off the marketplace.
+    const listings = await materialListingModel.find({ seller: userId, is_deleted: deleteConstants.NOT_DELETED, status: { $ne: LISTING_STATES.ARCHIVED } }).select('status');
+    for (const listing of listings) {
+        await materialListingModel.updateOne({ _id: listing._id }, {
+            $set: { status: LISTING_STATES.ARCHIVED },
+            $push: { stateHistory: { fromStatus: listing.status, toStatus: LISTING_STATES.ARCHIVED, changedBy: userId, changedByType: 'system', reason: 'Account deleted' } },
+        });
+    }
+    // Either side: withdraw open offers (versioned history, like a cancel).
+    const offers = await offerModel.find({ $or: [{ buyer: userId }, { seller: userId }], status: { $in: [OFFER_STATES.PENDING, OFFER_STATES.COUNTERED] }, is_deleted: deleteConstants.NOT_DELETED }).select('history');
+    for (const offer of offers) {
+        await offerModel.updateOne({ _id: offer._id, status: { $in: [OFFER_STATES.PENDING, OFFER_STATES.COUNTERED] } }, {
+            $set: { status: OFFER_STATES.CANCELLED },
+            $push: { history: { version: (offer.history?.length || 0) + 1, action: 'CANCEL', by: 'system', actorId: userId, message: 'Account deleted' } },
+        });
+    }
+    // Buyer: close open requirements.
+    await requirementModel.updateMany({ buyer: userId, status: { $in: REQUIREMENT_OPEN_STATES } }, { $set: { status: REQUIREMENT_STATES.CLOSED } });
+
+    await helper.deleteSession(userId);
+    await userModel.updateOne({ _id: new mongoose.Types.ObjectId(userId) }, { $set: { is_deleted: deleteConstants.DELETED, fcmTokens: [] } });
+    return { listingsArchived: listings.length, offersWithdrawn: offers.length };
 };
+
 authService.getProfile = async (request) => {
     const userId = request?.auth?._id;
     const baseMatch = {
@@ -575,35 +617,25 @@ authService.getProfile = async (request) => {
         gender: 1,
         createdAt: 1
     };
-    if (
-        request?.auth?.userType === userTypeConstants.Seller ||
-        request?.auth?.userType === userTypeConstants.Owner ||
-        request?.auth?.userType === userTypeConstants.Buyer
-    ) {
-        const userData = await userModel.aggregate([
-            { $match: baseMatch },
-            {
-                $project: {
-                    ...commonProjection,
-                    isPasswordKey: {
-                        $cond: {
-                            if: { $gt: [{ $strLenCP: { $ifNull: ["$password", ""] } }, 0] },
-                            then: true,
-                            else: false
-                        }
+    const userData = await userModel.aggregate([
+        { $match: baseMatch },
+        {
+            $project: {
+                ...commonProjection,
+                isPasswordKey: {
+                    $cond: {
+                        if: { $gt: [{ $strLenCP: { $ifNull: ["$password", ""] } }, 0] },
+                        then: true,
+                        else: false
                     }
                 }
             }
-        ]);
-
-        return userData[0] || null;
-    } else {
-        const userData = await userModel.aggregate([
-            { $match: baseMatch },
-            { $project: { ...commonProjection } }
-        ]);
-        return userData[0] || null;
-    }
+        }
+    ]);
+    if (!userData[0]) return null;
+    // Role + permissions drive what the UI shows; the API re-checks them.
+    const access = await accessFor(request);
+    return { ...userData[0], ...describeAccess(access) };
 };
 
 module.exports = authService;

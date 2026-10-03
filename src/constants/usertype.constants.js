@@ -1,11 +1,9 @@
-// Renamed from the investment-domain roles (Investor/Developer) to the
-// marketplace roles (Buyer/Seller) as part of the construction-materials
-// marketplace pivot. Owner/ComplianceOfficer kept — generic staff-side
-// roles, unrelated to the removed investment domain.
-const userTypeConstants={
-    Buyer:"Buyer",
-    Seller:"Seller",
-    Owner:"Owner",
-    ComplianceOfficer:"ComplianceOfficer"
-}
-module.exports=userTypeConstants
+// Marketplace roles (users.userType). Authorization for each role lives in
+// constants/rbac.constants.js (USER_ROLE_PERMISSIONS). Seller sub-types
+// (INDIVIDUAL / BUSINESS_STORE) are an attribute, not a role — see
+// sellerType.constants.js.
+const userTypeConstants = Object.freeze({
+    Buyer: "Buyer",
+    Seller: "Seller",
+});
+module.exports = userTypeConstants;

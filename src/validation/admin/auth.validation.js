@@ -65,8 +65,10 @@ class adminValidation {
 
     static changePassword() {
         return Joi.object({
-            oldPassword: this.passwordRule,
-            newPassword: this.passwordRule
+            // The current password is only compared, so it isn't held to
+            // today's complexity rule (it may predate it).
+            oldPassword: Joi.string().max(128).required().messages({ 'string.empty': 'Current password is required', 'any.required': 'Current password is required' }),
+            newPassword: this.passwordRule.required().messages({ 'any.required': 'New password is required' })
         });
     }
     static updateProfile() {

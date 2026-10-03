@@ -40,16 +40,18 @@ async function submitReview({ transactionId, userId, body, req }) {
   if (!mongoose.Types.ObjectId.isValid(transactionId)) throw new ReviewError('Invalid transaction id', 404);
   const txn = await transactionModel.findOne({ _id: transactionId, is_deleted: deleteConstants.NOT_DELETED });
   if (!txn) throw new ReviewError('Transaction not found', 404);
-  if (txn.status !== TRANSACTION_STATES.COMPLETED || txn.disputed) {
-    throw new ReviewError('You can rate only after the order is completed', 409, 'REVIEW_NOT_ELIGIBLE');
-  }
 
   // Role + counterparty come from the transaction, never from the client.
+  // Ownership first: a non-party gets the same 404 as a missing order, and
+  // never learns its status.
   let reviewerRole, reviewee;
   if (String(txn.buyer) === String(userId)) { reviewerRole = REVIEWER_ROLES.BUYER; reviewee = txn.seller; }
   else if (String(txn.seller) === String(userId)) { reviewerRole = REVIEWER_ROLES.SELLER; reviewee = txn.buyer; }
-  else throw new ReviewError('You are not a party to this transaction', 403);
+  else throw new ReviewError('Transaction not found', 404);
   if (String(reviewee) === String(userId)) throw new ReviewError('You cannot rate yourself', 403);
+  if (txn.status !== TRANSACTION_STATES.COMPLETED || txn.disputed) {
+    throw new ReviewError('You can rate only after the order is completed', 409, 'REVIEW_NOT_ELIGIBLE');
+  }
 
   let review;
   try {

@@ -22,11 +22,49 @@ async function myProjects({ buyerId, page = 1, limit = 20 }) {
   return { getData, count, page: pageNum, limit: pageLimit };
 }
 
-async function getOne({ projectId, buyerId }) {
-  if (!mongoose.Types.ObjectId.isValid(projectId)) throw new ProjectError('Invalid project id', 404);
-  const project = await projectModel.findOne({ _id: projectId, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED }).lean();
+// Ownership: a project is only ever found through its buyer — anyone
+// else's id is "not found".
+async function findOwned(projectId, buyerId) {
+  if (!mongoose.Types.ObjectId.isValid(projectId)) throw new ProjectError('Project not found', 404);
+  const project = await projectModel.findOne({ _id: projectId, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED });
   if (!project) throw new ProjectError('Project not found', 404);
   return project;
+}
+
+// Detail + the orders and offers the buyer linked to this project.
+async function getOne({ projectId, buyerId }) {
+  const project = (await findOwned(projectId, buyerId)).toObject();
+  const transactionModel = require('../../model/transaction.model');
+  const offerModel = require('../../model/offer.model');
+  const [orders, offers] = await Promise.all([
+    transactionModel.find({ project: project._id, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED })
+      .select('listing status agreedAmount agreedQuantity createdAt').populate('listing', 'title unit').sort({ createdAt: -1 }).limit(50).lean(),
+    offerModel.find({ project: project._id, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED })
+      .select('listing status currentAmount quantity createdAt').populate('listing', 'title unit').sort({ createdAt: -1 }).limit(50).lean(),
+  ]);
+  return { ...project, orders, offers };
+}
+
+async function updateProject({ projectId, buyerId, body }) {
+  const project = await findOwned(projectId, buyerId);
+  Object.assign(project, body);
+  if (body.materialsRequired !== undefined && project.materialsSourced > project.materialsRequired && project.materialsRequired > 0) {
+    project.materialsSourced = project.materialsRequired;
+  }
+  await project.save();
+  return project;
+}
+
+// Soft delete. Refused while an order linked to it is still in progress,
+// so an in-flight purchase never loses its project.
+async function deleteProject({ projectId, buyerId }) {
+  const project = await findOwned(projectId, buyerId);
+  const transactionModel = require('../../model/transaction.model');
+  const { TRANSACTION_TERMINAL_STATES } = require('../../constants/transaction.constants');
+  const open = await transactionModel.countDocuments({ project: project._id, status: { $nin: TRANSACTION_TERMINAL_STATES }, is_deleted: deleteConstants.NOT_DELETED });
+  if (open) throw new ProjectError(`This project has ${open} order${open === 1 ? '' : 's'} in progress — finish ${open === 1 ? 'it' : 'them'} first`, 409);
+  project.is_deleted = deleteConstants.DELETED;
+  await project.save();
 }
 
 async function markMaterialSourced({ projectId, buyerId, count = 1 }) {
@@ -38,4 +76,4 @@ async function markMaterialSourced({ projectId, buyerId, count = 1 }) {
   return project;
 }
 
-module.exports = { ProjectError, createProject, myProjects, getOne, markMaterialSourced };
+module.exports = { ProjectError, createProject, myProjects, getOne, updateProject, deleteProject, markMaterialSourced };

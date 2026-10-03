@@ -3,8 +3,19 @@ const statusCodes = require('../../constants/httpConstants');
 const adminEscrowService = require('../../service/admin/escrow.service');
 const commissionService = require('../../service/app/commission.service');
 const validation = require('../../validation/admin/escrow.validation');
-const PERMISSIONS = require('../../constants/permission.constant');
-const { hasPermission } = require('../../helper/permissionCheck.helper');
+const { ADMIN_PERMISSIONS } = require('../../constants/rbac.constants');
+const { accessFor, hasAll, hasAny, FORBIDDEN_MESSAGE } = require('../../helper/authorization.helper');
+const { ForbiddenError } = require('../../utils/AppError');
+
+// The route lets in anyone holding SOME payment-action permission; the
+// action in the body decides which one is actually required.
+async function assertActionAllowed(request, action) {
+  const rule = adminEscrowService.ACTION_PERMISSIONS[action];
+  const access = await accessFor(request);
+  const ok = rule && (rule.all ? hasAll(access, rule.all) : hasAny(access, rule.any));
+  if (!ok) throw new ForbiddenError(FORBIDDEN_MESSAGE);
+  return access;
+}
 
 class AdminEscrowController {
   getDetail = async (request, response, nextFunction) => {
@@ -18,13 +29,14 @@ class AdminEscrowController {
     try {
       const { error, value } = validation.ValidateAction(request.body);
       if (responseConstants.validatIonError(response, error)) return;
+      const access = await assertActionAllowed(request, value.action);
       const result = await adminEscrowService.performAction({
         transactionId: request.params.id,
         ...value,
         // Header wins: clients send `Idempotency-Key` per click.
         idempotencyKey: request.get('Idempotency-Key') || value.idempotencyKey || null,
         adminId: request.auth._id,
-        canManual: await hasPermission(request.auth, PERMISSIONS.PAYMENTCONTROL.MANUAL_RESOLUTION),
+        canManual: hasAll(access, [ADMIN_PERMISSIONS.PAYMENT_MANUAL_RESOLVE]),
         req: request,
       });
       return responseConstants.success(response, result.duplicate ? 'Already processed — no changes made' : 'Payment action completed', result.transaction, statusCodes.OK);

@@ -36,7 +36,7 @@ function mockResponse() {
 }
 
 describe("authMiddleware — cookie-first, header-fallback", () => {
-  const middleware = authMiddleware([]);
+  const middleware = authMiddleware();
 
   test("no cookie and no Authorization header -> 'Authorization token is missing'", async () => {
     const req = { cookies: {}, headers: {} };
@@ -92,7 +92,7 @@ describe("authMiddleware — realm and role separation", () => {
   test("admin session cookie only → user API answers 401 (admin has no user token)", async () => {
     const res = mockResponse();
     const next = jest.fn();
-    await authMiddleware([])({ cookies: { adminAccessToken: "admin.jwt" }, headers: {} }, res, next);
+    await authMiddleware()({ cookies: { adminAccessToken: "admin.jwt" }, headers: {} }, res, next);
     expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
     // only the USER cookie is cleared — the admin session cookie is untouched
@@ -102,24 +102,29 @@ describe("authMiddleware — realm and role separation", () => {
   test("expired token → 401", async () => {
     const res = mockResponse();
     const expired = jwt.sign({ _id: BUYER_ID, exp: Math.floor(Date.now() / 1000) - 60 }, "test-secret");
-    await authMiddleware([])({ cookies: { accessToken: expired }, headers: {} }, res, jest.fn());
+    await authMiddleware()({ cookies: { accessToken: expired }, headers: {} }, res, jest.fn());
     expect(res.status).toHaveBeenCalledWith(401);
   });
 
   test("token signed with the wrong secret → 401", async () => {
     const res = mockResponse();
     const forged = jwt.sign({ _id: BUYER_ID }, "not-the-secret");
-    await authMiddleware([])({ cookies: { accessToken: forged }, headers: {} }, res, jest.fn());
+    await authMiddleware()({ cookies: { accessToken: forged }, headers: {} }, res, jest.fn());
     expect(res.status).toHaveBeenCalledWith(401);
   });
 
-  test("valid buyer token on a seller-only API → 403, not 401", async () => {
-    userModel.findOne.mockResolvedValue({ _id: BUYER_ID, userType: "Buyer", status: "approved", isEmailVerified: true });
+  test("valid token for an account with an unknown/legacy role → 403 (fail closed), not 401", async () => {
+    userModel.findOne.mockResolvedValue({ _id: BUYER_ID, userType: "ComplianceOfficer", status: "approved", isEmailVerified: true });
     const res = mockResponse();
     const next = jest.fn();
-    await authMiddleware(["Seller"])({ cookies: { accessToken: sign(BUYER_ID) }, headers: {}, path: "/x" }, res, next);
+    await authMiddleware()({ cookies: { accessToken: sign(BUYER_ID) }, headers: {}, path: "/x" }, res, next);
     expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json.mock.calls[0][0]).toMatchObject({ status: false, data: null });
     expect(next).not.toHaveBeenCalled();
+  });
+
+  test("role lists are no longer accepted — access rules belong to authorize()", () => {
+    expect(() => authMiddleware(["Seller"])).toThrow(/authorize/);
   });
 
   test("suspended user → 401 and sessions revoked", async () => {
@@ -127,7 +132,7 @@ describe("authMiddleware — realm and role separation", () => {
     userModel.findOne.mockResolvedValue({ _id: BUYER_ID, userType: "Buyer", status: "suspended", fullName: "B", isEmailVerified: true });
     sessionModel.deleteMany.mockReturnValue({ catch: () => Promise.resolve() });
     const res = mockResponse();
-    await authMiddleware(["Buyer"])({ cookies: { accessToken: sign(BUYER_ID) }, headers: {} }, res, jest.fn());
+    await authMiddleware()({ cookies: { accessToken: sign(BUYER_ID) }, headers: {} }, res, jest.fn());
     expect(res.status).toHaveBeenCalledWith(401);
     expect(sessionModel.deleteMany).toHaveBeenCalled();
   });

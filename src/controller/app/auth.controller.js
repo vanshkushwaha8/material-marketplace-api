@@ -1,3 +1,4 @@
+const { USER_ROLE_PERMISSIONS } = require('../../constants/rbac.constants');
 const helper = require("../../helper/helper");
 const { setAuthCookie, clearAuthCookie } = require("../../helper/authCookie");
 const { createAuditLog } = require("../../helper/audit.helper");
@@ -129,6 +130,12 @@ class authController {
         });
         return responseConstants.Forbidden(response, messageConstants.USER.INVALID_CREDENTIALS, null, statusCodes.OK);
       }
+      // Only marketplace roles can sign in here (fail closed on legacy or
+      // corrupted account types). Checked after the password so it reveals
+      // nothing about accounts the caller can't authenticate as.
+      if (!USER_ROLE_PERMISSIONS[userData.userType]) {
+        return responseConstants.Forbidden(response, "This account cannot sign in here");
+      }
       if (!userData.isEmailVerified) {
         const verificationData = await verificationModel.findOne({ userId: userData?._id });
         if (verificationData) {
@@ -214,23 +221,42 @@ class authController {
     }
   };
 
+  // What would stop this account being deleted right now (shown before the
+  // user confirms), and which confirmation the account needs.
+  accountDeletionCheck = async (request, response, nextFunction) => {
+    try {
+      const account = await userModel.findOne({ _id: request.auth._id }).select('password').lean();
+      const blockers = await authService.deletionBlockers(request.auth._id);
+      return responseConstants.success(response, 'Account deletion check', { canDelete: blockers.length === 0, blockers, confirmWith: account?.password ? 'password' : 'typed_confirmation' }, statusCodes.OK);
+    } catch (error) {
+      nextFunction(error)
+    }
+  };
+
   accountDelete = async (request, response, nextFunction) => {
     try {
       const { error } = await authValidation.validateAccountDelete(request.body);
       const validationError = responseConstants.validatIonError(response, error);
       if (validationError) return;
-      const userPassword = await userModel.findOne({ _id: request?.auth?._id })
-      if (!await helper.comparePassword(request?.body?.password, userPassword?.password)) {
-        return responseConstants.BadRequest(response, messageConstants.USER.INCORRECT_PASSWORD, null);
+      const account = await userModel.findOne({ _id: request?.auth?._id }).select('password');
+      const hasPassword = !!account?.password;
+      if (hasPassword) {
+        if (!request?.body?.password || !await helper.comparePassword(request.body.password, account.password)) {
+          return responseConstants.BadRequest(response, messageConstants.USER.INCORRECT_PASSWORD, null);
+        }
+      } else if (request?.body?.confirm !== 'DELETE') {
+        return responseConstants.BadRequest(response, 'Type DELETE to confirm', null);
       }
-      const data = await authService.delete(request);
+      const result = await authService.delete(request);
       await createAuditLog({
-        req: request, userId: data._id, action: auditLogConstants.ACOUNTDELETE, entity: CollectionName.users, entityId: data._id, metadata: {
+        req: request, userId: request.auth._id, action: auditLogConstants.ACOUNTDELETE, entity: CollectionName.users, entityId: request.auth._id, metadata: {
           deletionType: 'self_service',
           initiatedBy: 'user',
-          passwordVerified: true,
+          confirmedWith: hasPassword ? 'password' : 'typed_confirmation',
+          ...result,
         }
       });
+      clearAuthCookie(response);
       return responseConstants.success(response, messageConstants.USER.ACCOUNT_DELETED_SUCCESS, null, statusCodes.OK);
     } catch (error) {
       nextFunction(error)
