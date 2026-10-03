@@ -5,6 +5,8 @@ const router = express.Router();
 
 // Public — no auth. Buyers/sellers both need the taxonomy (browse filters,
 // listing-creation form) before they necessarily have an account context.
+// Live listing counts / lowest price per category (landing page).
+router.get('/material-categories/summary', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), materialCategoryController.summary);
 router.get('/material-categories', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), materialCategoryController.list);
 
 module.exports = router;

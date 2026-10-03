@@ -3,6 +3,15 @@ const statusCodes = require('../../constants/httpConstants');
 const materialCategoryService = require('../../service/app/materialCategory.service');
 
 class MaterialCategoryController {
+  summary = async (request, response, nextFunction) => {
+    try {
+      const data = await materialCategoryService.summary();
+      return responseConstants.success(response, 'Category summary fetched', data, statusCodes.OK);
+    } catch (error) {
+      nextFunction(error);
+    }
+  };
+
   list = async (request, response, nextFunction) => {
     try {
       const categories = await materialCategoryService.list(request.query);

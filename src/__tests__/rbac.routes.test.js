@@ -45,7 +45,7 @@ const APP = {
   'GET /validate-reset-token': 'public', 'POST /2fa/login/send-email': 'public', 'POST /2fa/login/verify': 'public',
   'POST /2fa/login/recovery': 'public', 'GET /userconsent/get': 'public', 'POST /request/password': 'public',
   'POST /reset/password': 'public', 'GET /config': 'public', 'GET /sitemap.xml': 'public',
-  'GET /material-categories': 'public', 'GET /business-types': 'public', 'GET /material-listings': 'public',
+  'GET /material-categories': 'public', 'GET /material-categories/summary': 'public', 'GET /business-types': 'public', 'GET /material-listings': 'public',
   'POST /payments/webhook/razorpay': 'public', 'GET /stores/:sellerId': 'public', 'GET /stores/:sellerId/products': 'public',
   'GET /sellers/:sellerId/reviews': 'public', 'GET /nearby/sellers': 'public',
   'GET /material-listings/:id': 'soft', 'GET /sellers/:sellerId/follow-status': 'soft',

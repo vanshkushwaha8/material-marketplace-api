@@ -19,6 +19,7 @@ const configenv = require('../config/env.config');
 
 const NAMESPACES = Object.freeze({
   CATEGORIES: 'categories',       // public material categories (admin-managed)
+  CATEGORY_STATS: 'category-stats', // per-category live listing counts / lowest price (short TTL, not invalidated)
   BUSINESS_TYPES: 'business-types', // public business types (admin-managed)
   STORE: 'store',                 // public store profile, per seller
   SELLER_RATING: 'seller-rating', // seller rating summary, per seller
