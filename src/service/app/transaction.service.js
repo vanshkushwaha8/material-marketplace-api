@@ -7,7 +7,7 @@ const { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES, COMM
 const { createAuditLog, createAuditLogAdmin } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const configenv = require('../../config/env.config');
-const { toPaise, fromPaise, calculateCommissionPaise } = require('../../helper/money.helper');
+const { toPaise, fromPaise, calculateCommissionPaise, payableAmount } = require('../../helper/money.helper');
 const payoutService = require('./payout.service');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_TYPES } = require('../../constants/notification.constants');
@@ -80,14 +80,18 @@ async function markPaymentConfirmed({ transactionId, providerPaymentId, req }) {
         // second capture for an already-paid one cannot apply.
         paid = await escrow.transition({
             transactionId: current._id, action: 'PAYMENT_CAPTURED', actor: { type: ESCROW_ACTORS.PROVIDER },
-            providerRef: providerPaymentId || '', amount: current.agreedAmount,
+            // Amount captured = product price + buyer fee; commission and
+            // settlement (above) stay based on the product price only.
+            providerRef: providerPaymentId || '', amount: payableAmount(current),
             where: { status: TRANSACTION_STATES.PAYMENT_PENDING, is_deleted: deleteConstants.NOT_DELETED },
             set: {
                 status: TRANSACTION_STATES.PAYMENT_CONFIRMED,
                 paymentConfirmedAt: now,
                 platformCommissionPct: c.pct,
                 platformCommissionAmount: c.commission,
-                sellerSettlementAmount: c.settlement,
+                // The seller delivers, so the delivery charge is theirs —
+                // added after commission (commission is on the product only).
+                sellerSettlementAmount: fromPaise(toPaise(c.settlement) + toPaise(current.deliveryCharge || 0)),
                 commissionSellerType: c.sellerType,
                 commissionSetting: c.settingId,
                 commissionLockedAt: now,
@@ -107,7 +111,7 @@ async function markPaymentConfirmed({ transactionId, providerPaymentId, req }) {
     // delivery + buyer confirmation.
     await escrow.transition({
         transactionId: current._id, action: 'HOLD', actor: { type: ESCROW_ACTORS.SYSTEM },
-        reason: 'Held until the seller delivers and the buyer confirms receipt', amount: current.agreedAmount, req,
+        reason: 'Held until the seller delivers and the buyer confirms receipt', amount: payableAmount(current), req,
     });
     const txn = await transactionModel.findById(current._id);
 
@@ -362,7 +366,170 @@ async function getOne({ transactionId, userId }) {
     await fresh.populate('buyer', 'fullName');
     await fresh.populate('seller', 'fullName sellerType');
     const payout = await require('../../model/payout.model').findOne({ transaction: fresh._id }).select('status netPayoutAmount processedAt failureReason').lean();
-    return toPartyView(fresh.toObject(), payout);
+    const view = toPartyView(fresh.toObject(), payout);
+    const store = await loadStoreSummary(fresh.seller);
+    if (store) {
+        // Lets checkout disable delivery up front instead of failing after
+        // the buyer picks an address.
+        const listing = await materialListingModel.findById(fresh.listing?._id || fresh.listing).select('location.geo').lean();
+        store.canPriceDelivery = Boolean(await sellerOriginPoint(fresh.seller._id, listing));
+        view.store = store;
+    }
+    return view;
+}
+
+// Store identity + what it offers, for the checkout page and order view.
+// City/state only — same public detail the storefront shows.
+async function loadStoreSummary(seller) {
+    if (seller?.sellerType !== 'BUSINESS_STORE') return null;
+    const storeProfileModel = require('../../model/storeProfile.model');
+    const store = await storeProfileModel
+        .findOne({ seller: seller._id, is_deleted: deleteConstants.NOT_DELETED })
+        .select('storeName profileImage verificationStatus pickupAvailable deliveryAvailable location.city location.state')
+        .lean();
+    if (!store) return null;
+    return {
+        storeName: store.storeName,
+        profileImageUrl: store.profileImage ? `/images/${store.profileImage}` : '',
+        verified: store.verificationStatus === 'VERIFIED',
+        pickupAvailable: !!store.pickupAvailable,
+        deliveryAvailable: !!store.deliveryAvailable,
+        city: store.location?.city || '',
+        state: store.location?.state || '',
+    };
+}
+
+async function loadPayableForBuyer(transactionId, userId) {
+    const { txn, role } = await getOwned(transactionId, userId);
+    if (role !== 'buyer') throw new TransactionError('Transaction not found', 404);
+    if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
+        throw new TransactionError('Delivery details can only be changed before payment', 409);
+    }
+    return txn;
+}
+
+// Delivery price for this order to one of the buyer's saved addresses:
+// distance from the store's pinned point (falls back to the listing's own
+// point for individual sellers) + total weight (listing.weightPerUnitKg ×
+// quantity), priced by the admin rate card. Server-side only.
+async function priceDelivery(txn, buyerId, addressId) {
+    const deliveryRateService = require('./deliveryRate.service');
+    if (!mongoose.Types.ObjectId.isValid(addressId)) throw new TransactionError('Choose a delivery address', 400);
+    const deliveryLocationModel = require('../../model/deliveryLocation.model');
+    const address = await deliveryLocationModel.findOne({ _id: addressId, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED }).lean();
+    if (!address) throw new TransactionError('Delivery address not found', 404);
+
+    const listing = await materialListingModel.findById(txn.listing).select('weightPerUnitKg location.geo').lean();
+    const from = await sellerOriginPoint(txn.seller, listing);
+    const to = address.latitude != null && address.longitude != null ? [address.longitude, address.latitude] : null;
+    const weightKg = (Number(listing?.weightPerUnitKg) || 0) * Number(txn.agreedQuantity || 0);
+    try {
+        const q = await deliveryRateService.quote({ from, to, weightKg });
+        return { quote: q, address, weightKnown: listing?.weightPerUnitKg != null };
+    } catch (err) {
+        if (err instanceof deliveryRateService.DeliveryRateError) {
+            const e = new TransactionError(err.message, err.statusCode);
+            e.code = err.code;
+            throw e;
+        }
+        throw err;
+    }
+}
+
+// Where delivery starts: the store's pinned point, else the listing's own
+// point, else the seller's registered account location (all real captured
+// coordinates — never a city centroid). null = nothing pinned anywhere.
+async function sellerOriginPoint(sellerId, listing) {
+    const valid = (c) => (Array.isArray(c) && c.length === 2 ? c : null);
+    const storeProfileModel = require('../../model/storeProfile.model');
+    const store = await storeProfileModel.findOne({ seller: sellerId, is_deleted: deleteConstants.NOT_DELETED }).select('location.geo').lean();
+    const fromStore = valid(store?.location?.geo?.coordinates) || valid(listing?.location?.geo?.coordinates);
+    if (fromStore) return fromStore;
+    const user = await userModel.findById(sellerId).select('location.geo').lean();
+    return valid(user?.location?.geo?.coordinates);
+}
+
+const totalsWith = (txn, deliveryCharge) => fromPaise(toPaise(txn.agreedAmount) + toPaise(txn.buyerFeeAmount || 0) + toPaise(deliveryCharge || 0));
+
+// Checkout preview: what delivery to `addressId` would cost and the new
+// total. Saves nothing — setFulfilment re-prices when the buyer commits.
+async function deliveryQuote({ transactionId, userId, addressId }) {
+    const txn = await loadPayableForBuyer(transactionId, userId);
+    const { quote, weightKnown } = await priceDelivery(txn, userId, addressId);
+    return {
+        ...quote,
+        weightKnown,
+        productAmount: txn.agreedAmount,
+        convenienceFee: txn.buyerFeeAmount || 0,
+        totalPayable: totalsWith(txn, quote.charge),
+    };
+}
+
+// Buyer picks delivery / store pickup (and the address + contact for it)
+// on the checkout page. Only while the order is still unpaid — after that
+// the seller is already acting on what was chosen. Delivery is priced here
+// (never from a client-sent amount) and folded into totalPayable.
+async function setFulfilment({ transactionId, userId, body, req }) {
+    const txn = await loadPayableForBuyer(transactionId, userId);
+    const seller = await userModel.findById(txn.seller).select('sellerType').lean();
+    const store = await loadStoreSummary({ _id: txn.seller, sellerType: seller?.sellerType });
+    // A store that lists what it offers is held to it; one that lists
+    // neither leaves both open (arranged with the store).
+    if (store && (store.pickupAvailable || store.deliveryAvailable)) {
+        if (body.method === 'DELIVERY' && !store.deliveryAvailable) throw new TransactionError('This store does not deliver — choose store pickup', 400);
+        if (body.method === 'PICKUP' && !store.pickupAvailable) throw new TransactionError('This store does not offer pickup — choose delivery', 400);
+    }
+
+    let delivery = null;
+    if (body.method === 'DELIVERY') delivery = await priceDelivery(txn, userId, body.addressId);
+    const deliveryCharge = delivery ? delivery.quote.charge : 0; // store pickup is free
+    const newTotal = totalsWith(txn, deliveryCharge);
+
+    // The amount is changing under any open payment order for this order.
+    // A payment the buyer may be completing right now → refuse; older,
+    // never-started orders are cancelled so a fresh one is made at the new
+    // total (payment.service also refuses to apply a capture whose amount
+    // doesn't match the order).
+    const paymentModel = require('../../model/payment.model');
+    const { PAYMENT_STATES } = require('../../constants/payment.constants');
+    const open = await paymentModel.find({
+        transaction: txn._id, status: { $in: [PAYMENT_STATES.CREATED, PAYMENT_STATES.PENDING, PAYMENT_STATES.PROCESSING] }, is_deleted: deleteConstants.NOT_DELETED,
+    }).select('status amountPaise createdAt').lean();
+    const stale = open.filter((p) => p.amountPaise !== toPaise(newTotal));
+    if (stale.some((p) => p.status !== PAYMENT_STATES.CREATED || Date.now() - new Date(p.createdAt).getTime() < ACTIVE_PAYMENT_GRACE_MS)) {
+        throw new TransactionError('A payment for this order is in progress — finish it, or try again in a few minutes', 409);
+    }
+    if (stale.length) {
+        await paymentModel.updateMany(
+            { _id: { $in: stale.map((p) => p._id) }, status: PAYMENT_STATES.CREATED },
+            { $set: { status: PAYMENT_STATES.CANCELLED, failureReason: 'Order total changed at checkout' }, $push: { history: { action: 'CANCELLED_TOTAL_CHANGED' } } }
+        );
+    }
+
+    txn.fulfilment = {
+        method: body.method,
+        addressLabel: delivery ? delivery.address.label : '',
+        address: delivery ? delivery.address.address : '',
+        contactName: body.contactName,
+        contactPhone: body.contactPhone,
+        note: body.note || '',
+        deliveryLocation: delivery ? delivery.address._id : null,
+        latitude: delivery ? delivery.address.latitude : null,
+        longitude: delivery ? delivery.address.longitude : null,
+        distanceKm: delivery ? delivery.quote.distanceKm : null,
+        weightKg: delivery ? delivery.quote.weightKg : null,
+        rateSetting: delivery ? delivery.quote.rateSettingId : null,
+        updatedAt: new Date(),
+    };
+    txn.deliveryCharge = deliveryCharge;
+    txn.totalPayable = newTotal;
+    txn.history.push({
+        action: 'FULFILMENT_SET', by: 'buyer',
+        note: delivery ? `Delivery chosen — ${delivery.quote.distanceKm} km, ₹${deliveryCharge}` : 'Store pickup chosen',
+    });
+    await txn.save();
+    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_FULFILMENT_SET, entity: 'transactions', entityId: txn._id, metadata: { fulfilment: body.method, deliveryCharge } });
+    return { fulfilment: txn.fulfilment, deliveryCharge, totalPayable: newTotal, buyerFeeAmount: txn.buyerFeeAmount || 0 };
 }
 
 // Buyer/seller view of a transaction: the escrow state and its timeline,
@@ -434,5 +601,5 @@ async function expireStaleReservations() {
 module.exports = {
     TransactionError, calculateCommission, markPaymentConfirmed, markHandover,
     confirmReceipt, settleConfirmedTransaction, toPartyView,
-    cancelTransaction, resolveDispute, raiseDispute, getOne, myTransactions, expireStaleReservations,
+    cancelTransaction, resolveDispute, raiseDispute, getOne, myTransactions, expireStaleReservations, setFulfilment, deliveryQuote,
 };

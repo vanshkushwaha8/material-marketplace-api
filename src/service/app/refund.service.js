@@ -6,7 +6,7 @@ const { PAYMENT_STATES } = require('../../constants/payment.constants');
 const { PAYOUT_STATES } = require('../../constants/payout.constants');
 const { TRANSACTION_STATES, COMMISSION_STATES, SETTLEMENT_STATES } = require('../../constants/transaction.constants');
 const { ESCROW_STATES, ESCROW_ACTORS, ESCROW_PENDING_OPERATIONS } = require('../../constants/escrow.constants');
-const { toPaise } = require('../../helper/money.helper');
+const { toPaise, payableAmount } = require('../../helper/money.helper');
 const { getPaymentAdapter, getManualTestPaymentAdapter } = require('../../config/integrations.config');
 const escrow = require('./escrow.service');
 const notificationService = require('./notification.service');
@@ -61,9 +61,11 @@ async function requestRefund({ transactionId, actor, reason, idempotencyKey = nu
   const attempt = (txn.refund?.attempts || 0) + 1;
   const claim = await escrow.transition({
     transactionId: txn._id, action: 'REQUEST_REFUND', actor, reason, idempotencyKey,
-    amount: txn.agreedAmount, providerRef: payment.providerPaymentId || '',
+    amount: payableAmount(txn), providerRef: payment.providerPaymentId || '',
     set: {
-      'refund.status': 'PENDING', 'refund.amount': txn.agreedAmount, 'refund.reason': reason || '',
+      // Full captured amount (product price + buyer fee) — the provider
+      // refund below is payment.amountPaise, i.e. the same total.
+      'refund.status': 'PENDING', 'refund.amount': payableAmount(txn), 'refund.reason': reason || '',
       'refund.requestedAt': new Date(), 'refund.failureReason': '', 'refund.attempts': attempt,
       'refund.requestedByAdmin': actor?.type === ESCROW_ACTORS.ADMIN ? actor.id : null,
       escrowPendingOperation: ESCROW_PENDING_OPERATIONS.REFUND, escrowAttentionReason: '',
@@ -73,7 +75,7 @@ async function requestRefund({ transactionId, actor, reason, idempotencyKey = nu
   });
   if (!claim.applied) return claim.txn; // duplicate request — refund already requested
 
-  const audit = { req, action: auditLogConstants.REFUND_REQUESTED, entity: 'transactions', entityId: txn._id, reason, metadata: { attempt, amount: txn.agreedAmount } };
+  const audit = { req, action: auditLogConstants.REFUND_REQUESTED, entity: 'transactions', entityId: txn._id, reason, metadata: { attempt, amount: payableAmount(txn) } };
   if (actor?.type === ESCROW_ACTORS.ADMIN) await createAuditLogAdmin({ ...audit, adminId: actor.id });
   else await createAuditLog({ ...audit, userId: actor?.id || txn.buyer });
 
@@ -130,7 +132,7 @@ async function completeRefund({ transactionId, providerRefundId, amountPaise, ac
   await require('./review.service').invalidateForTransaction(txn._id, 'Order refunded')
     .catch((err) => console.error('Review invalidation failed (non-fatal):', err.message));
 
-  const amount = `₹${Number(txn.agreedAmount).toLocaleString('en-IN')}`;
+  const amount = `₹${Number(payableAmount(txn)).toLocaleString('en-IN')}`;
   await notificationService.createNotification({
     recipientId: txn.buyer, type: NOTIFICATION_TYPES.REFUND_PROCESSED,
     title: 'Refund completed', message: `${amount} has been refunded to your original payment method`,
@@ -162,7 +164,7 @@ async function failRefund({ transactionId, reason, providerRefundId = '', req })
   await createAuditLog({ req, userId: result.txn.buyer, action: auditLogConstants.REFUND_FAILED, entity: 'transactions', entityId: result.txn._id, reason });
   await notifyAdmins('REFUND_FAILED', {
     title: 'Refund failed — admin action needed',
-    message: `₹${Number(result.txn.agreedAmount).toLocaleString('en-IN')} refund failed: ${String(reason || '').slice(0, 200)}. Retry it from the transaction.`,
+    message: `₹${Number(payableAmount(result.txn)).toLocaleString('en-IN')} refund failed: ${String(reason || '').slice(0, 200)}. Retry it from the transaction.`,
     entityType: 'transaction', entityId: result.txn._id, userId: result.txn.buyer,
     dedupeKey: `REFUND_FAILED:${result.txn._id}:${result.txn.refund?.attempts || 0}`,
   });

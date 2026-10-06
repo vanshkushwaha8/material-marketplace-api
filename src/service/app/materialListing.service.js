@@ -264,6 +264,7 @@ async function createListing({ sellerId, body, req }) {
     supplyType,
     quantity: body.quantity,
     unit: body.unit,
+    weightPerUnitKg: body.weightPerUnitKg ?? null,
     price: body.price,
     currency: body.currency || 'INR',
     negotiable: body.negotiable !== undefined
@@ -372,7 +373,7 @@ async function updateListing({ sellerId, listingId, body, req }) {
     if (sp) listing.storeProfile = sp._id;
   }
 
-    const directFields = ['title', 'description', 'brand', 'condition', 'unit', 'price', 'currency', 'negotiable', 'manufacturingDate', 'purchaseDate'];
+    const directFields = ['title', 'description', 'brand', 'condition', 'unit', 'weightPerUnitKg', 'price', 'currency', 'negotiable', 'manufacturingDate', 'purchaseDate'];
   for (const field of directFields) {
     if (body[field] !== undefined) listing[field] = body[field];
   }
@@ -496,10 +497,15 @@ async function attachStoreProfile(listing) {
   const store = await (storeProfileId
     ? storeProfileModel.findOne({ _id: storeProfileId, is_deleted: deleteConstants.NOT_DELETED })
     : storeProfileModel.findOne({ seller: listing.seller._id, is_deleted: deleteConstants.NOT_DELETED })
-  ).select('storeName verificationStatus gstRegistered profileImage').lean();
+  ).select('storeName verificationStatus gstRegistered profileImage pickupAvailable deliveryAvailable').lean();
   if (store) {
     if (listing.toObject) listing = listing.toObject();
-    listing.storeProfile = { storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered, profileImageUrl: storeMediaUrl(store.profileImage) };
+    listing.storeProfile = {
+      storeName: store.storeName, verificationStatus: store.verificationStatus, gstRegistered: store.gstRegistered,
+      profileImageUrl: storeMediaUrl(store.profileImage),
+      // Detail page's delivery/pickup strip.
+      pickupAvailable: !!store.pickupAvailable, deliveryAvailable: !!store.deliveryAvailable,
+    };
   }
   return listing;
 }
@@ -592,6 +598,11 @@ async function getOne({ listingId, viewerId, viewerIsAdmin }) {
   const withStoreProfile = await attachStoreProfile(listing);
   const plain = withStoreProfile.toObject ? withStoreProfile.toObject() : withStoreProfile;
   plain.sellerProductsCount = sellerProductsCount;
+  // Seller rating for the "Sold By" card — same visible-ratings stats the
+  // search cards get from attachStoreProfiles. A failure just omits it.
+  const ratingStats = await require('./review.service').getSellerRatingStats([listing.seller._id]).catch(() => new Map());
+  const rating = ratingStats.get(String(listing.seller._id));
+  if (rating && plain.seller) Object.assign(plain.seller, { rating: rating.average, ratingCount: rating.count });
   if (plain.category) plain.category.logoUrl = storeMediaUrl(plain.category.logo);
   if (!isOwner && !viewerIsAdmin) plain.location = toPublicLocation(plain.location);
   return plain;

@@ -7,6 +7,7 @@ const configenv = require('../../config/env.config');
 const { notifyAdmins } = require('../admin/adminNotification.service');
 const deleteConstants = require('../../constants/delete.constants');
 const { LISTING_STATES } = require('../../constants/materialListing.constants');
+const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { OFFER_STATES, OFFER_TERMINAL_STATES, DEFAULT_OFFER_EXPIRY_HOURS } = require('../../constants/offer.constants');
 const { SELLER_PAYOUT_READINESS } = require('../../constants/payout.constants');
 const userModel = require('../../model/user.model');
@@ -14,8 +15,8 @@ const { resolvePayoutReadiness } = require('./payout.service');
 const { createAuditLog } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const transactionModel = require('../../model/transaction.model');
-const { TRANSACTION_STATES, RESERVATION_EXPIRY_HOURS } = require('../../constants/transaction.constants')
-const { toPaise, fromPaise, unitPriceFromAmount } = require('../../helper/money.helper');
+const { TRANSACTION_STATES, RESERVATION_EXPIRY_HOURS, BUYER_FEE_PCT } = require('../../constants/transaction.constants')
+const { toPaise, fromPaise, unitPriceFromAmount, buyerFeeFor } = require('../../helper/money.helper');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_TYPES } = require('../../constants/notification.constants');
 class OfferError extends Error {
@@ -171,6 +172,125 @@ async function createOffer({ buyerId, body, req }) {
   });
 
   return offer;
+}
+
+// "Buy Now" for Business Store listings: a store sells at its listed
+// price, so there is nothing for the seller to accept — the offer is
+// created already ACCEPTED at price × quantity and goes through the exact
+// same reservation + transaction path as a seller-accepted offer. The buyer
+// then pays the PAYMENT_PENDING transaction on the checkout page; an
+// unpaid one is released by the existing reservation-expiry job.
+async function buyNow({ buyerId, body, req }) {
+  if (!mongoose.Types.ObjectId.isValid(body.listing)) throw new OfferError('Invalid listing id');
+  if (body.project) {
+    const projectModel = require('../../model/project.model');
+    const ownProject = mongoose.Types.ObjectId.isValid(body.project) && await projectModel.exists({ _id: body.project, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED });
+    if (!ownProject) throw new OfferError('Project not found', 404);
+  }
+
+  const listing = await materialListingModel.findOne({ _id: body.listing, is_deleted: deleteConstants.NOT_DELETED });
+  if (!listing) throw new OfferError('Listing not found', 404);
+  if (listing.status !== LISTING_STATES.LIVE) throw new OfferError('This product is not available right now', 409);
+  if (String(listing.seller) === String(buyerId)) throw new OfferError('You cannot buy your own listing', 403);
+
+  const sellerAccount = await userModel.findById(listing.seller).select('status is_deleted sellerType').lean();
+  if (!sellerAccount || sellerAccount.status === 'suspended' || sellerAccount.is_deleted === deleteConstants.DELETED) {
+    throw new OfferError('This seller is not accepting orders right now', 409);
+  }
+  if (sellerAccount.sellerType !== SELLER_TYPES.BUSINESS_STORE) {
+    throw new OfferError('Buy Now is only for store products — send the seller an offer instead', 409, 'BUY_NOW_NOT_ALLOWED');
+  }
+
+  const quantity = Number(body.quantity);
+  if (!Number.isInteger(quantity) || quantity < 1) throw new OfferError('Quantity must be a whole number of at least 1');
+  const available = listing.availableQuantity ?? listing.quantity;
+  if (quantity > available) throw new OfferError(`Only ${available} ${listing.unit} available`, 400);
+
+  // Same rule as createOffer: one open deal per buyer per listing. An
+  // ACCEPTED offer whose transaction is still unpaid counts as open too —
+  // send the buyer back to pay that one instead of reserving stock twice.
+  const existing = await offerModel.findOne({
+    listing: listing._id, buyer: buyerId, status: { $nin: OFFER_TERMINAL_STATES }, is_deleted: deleteConstants.NOT_DELETED,
+  });
+  if (existing) throw new OfferError('You already have an open offer on this product — finish or withdraw it first', 409);
+  const unpaid = await transactionModel.findOne({
+    listing: listing._id, buyer: buyerId, status: TRANSACTION_STATES.PAYMENT_PENDING, is_deleted: deleteConstants.NOT_DELETED,
+  }).select('_id agreedQuantity source totalPayable agreedAmount').lean();
+  if (unpaid) {
+    // Same quantity → just continue that checkout.
+    if (unpaid.source === 'BUY_NOW' && Number(unpaid.agreedQuantity) === quantity) {
+      return { transactionId: unpaid._id, quantity, amount: unpaid.agreedAmount, reused: true };
+    }
+    // A different quantity on an earlier unpaid Buy Now → replace it: cancel
+    // (releases its reserved stock) and create a fresh order below. Refused
+    // while a payment for it is in progress, so money can never be captured
+    // against an order the buyer just replaced.
+    let replaced = false;
+    if (unpaid.source === 'BUY_NOW') {
+      try {
+        await require('./transaction.service').cancelTransaction({ transactionId: unpaid._id, userId: buyerId, req });
+        replaced = true;
+      } catch (e) { /* payment in progress or just paid — fall through */ }
+    }
+    if (!replaced) {
+      const err = new OfferError('You already have an unpaid order for this product — complete its payment', 409, 'UNPAID_ORDER_EXISTS');
+      err.transactionId = unpaid._id;
+      throw err;
+    }
+  }
+
+  // No payout-readiness gate here (unlike a seller ACCEPT): store products
+  // are always directly buyable. If the store's bank account isn't verified
+  // yet, the paid amount simply stays held in escrow — payout.service only
+  // releases settlement once the account is READY.
+
+  const amount = fromPaise(Math.round(toPaise(listing.price) * quantity));
+  const unitPrice = unitPriceFromAmount(amount, quantity);
+  const offer = await offerModel.create({
+    listing: listing._id,
+    buyer: buyerId,
+    seller: listing.seller,
+    project: body.project || null,
+    listedPrice: listing.price,
+    quantity,
+    currentAmount: amount,
+    lastActionBy: 'buyer',
+    status: OFFER_STATES.ACCEPTED,
+    history: [
+      { version: 1, action: 'OFFER', by: 'buyer', actorId: buyerId, amount, unitPrice, message: 'Buy Now at listed store price' },
+      { version: 2, action: 'ACCEPT', by: 'system', amount, unitPrice, message: 'Auto-accepted: fixed store price' },
+    ],
+    expiresAt: new Date(Date.now() + DEFAULT_OFFER_EXPIRY_HOURS * 60 * 60 * 1000),
+  });
+  const discardOffer = () => offerModel.updateOne(
+    { _id: offer._id },
+    { $set: { status: OFFER_STATES.CANCELLED }, $push: { history: { version: 3, action: 'CANCEL', by: 'system', message: 'Buy Now could not reserve stock' } } }
+  );
+
+  let reserved;
+  let transaction;
+  try {
+    reserved = await reserveInventoryForAccept(offer, req);
+  } catch (err) {
+    await discardOffer();
+    throw err;
+  }
+  try {
+    // Releases the reservation itself on failure.
+    transaction = await createTransactionForAccept(offer, reserved, req, { source: 'BUY_NOW', note: 'Created by Buy Now (store listed price)' });
+  } catch (err) {
+    await discardOffer();
+    throw err;
+  }
+
+  await createAuditLog({ req, userId: buyerId, action: auditLogConstants.OFFER_ACCEPTED, entity: 'offers', entityId: offer._id, metadata: { buyNow: true } });
+  await notificationService.createNotification({
+    recipientId: listing.seller, actorId: buyerId, type: NOTIFICATION_TYPES.OFFER_ACCEPTED,
+    title: 'New order placed',
+    message: (actorName) => `${actorName || 'A buyer'} ordered ${quantity} ${listing.unit} of "${listing.title}" for ₹${amount} — awaiting payment`,
+    entityType: 'transaction', entityId: transaction._id, entityName: listing.title,
+  });
+  return { transactionId: transaction._id, offerId: offer._id, amount, quantity };
 }
 
 async function respondToOffer({ userId, offerId, action, amount, message, req }) {
@@ -383,13 +503,23 @@ async function reserveInventoryForAccept(offer, req) {
 async function createTransactionForAccept(
   offer,
   listing,
-  req
+  req,
+  { source = 'OFFER', note = 'Created on offer acceptance' } = {}
 ) {
   try {
+    // Buyer convenience fee by seller type (store 2% / individual 3% by
+    // default), on top of the agreed price — snapshotted here.
+    const sellerUser = await userModel.findById(offer.seller).select('sellerType').lean();
+    const buyerFeePct = sellerUser?.sellerType === SELLER_TYPES.BUSINESS_STORE ? BUYER_FEE_PCT.BUSINESS_STORE : BUYER_FEE_PCT.INDIVIDUAL;
+    const { buyerFeeAmount, totalPayable } = buyerFeeFor(offer.currentAmount, buyerFeePct);
     const transaction = await transactionModel.create({
+      buyerFeePct,
+      buyerFeeAmount,
+      totalPayable,
       listing: listing._id,
       offer: offer._id,
       project: offer.project,
+      source,
 
       buyer: offer.buyer,
       seller: offer.seller,
@@ -412,7 +542,7 @@ async function createTransactionForAccept(
         {
           action: 'CREATED',
           by: 'system',
-          note: 'Created on offer acceptance',
+          note,
         },
       ],
     });
@@ -547,4 +677,4 @@ async function expireStaleOffers() {
   return { matched: stale.length, modified };
 }
 
-module.exports = { OfferError, createOffer, respondToOffer, getOne, myOffers, expireStaleOffers };
+module.exports = { OfferError, createOffer, buyNow, respondToOffer, getOne, myOffers, expireStaleOffers };

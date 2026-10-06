@@ -14,6 +14,8 @@ const payoutSchema = new mongoose.Schema(
     grossAmount: { type: Number, required: true, min: 0 },
     platformCommissionAmount: { type: Number, required: true, min: 0 },
     paymentProcessingFeeAmount: { type: Number, required: true, min: 0, default: 0 },
+    // Delivery charge the buyer paid — passed to the seller in full.
+    deliveryChargeAmount: { type: Number, min: 0, default: 0 },
     netPayoutAmount: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'INR' },
 

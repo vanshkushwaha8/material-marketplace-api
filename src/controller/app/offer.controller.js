@@ -19,6 +19,22 @@ class OfferController {
     }
   };
 
+  buyNow = async (request, response, nextFunction) => {
+    try {
+      const { error, value } = offerValidation.ValidateBuyNow(request.body);
+      const validationError = responseConstants.validatIonError(response, error);
+      if (validationError) return;
+      const result = await offerService.buyNow({ buyerId: request.auth._id, body: value, req: request });
+      return responseConstants.success(response, 'Order created — complete payment', result, statusCodes.CREATED);
+    } catch (error) {
+      if (error instanceof offerService.OfferError) {
+        const data = error.errorCode ? { code: error.errorCode, ...(error.transactionId ? { transactionId: error.transactionId } : {}) } : null;
+        return responseConstants.BadRequest(response, error.message, data, error.statusCode);
+      }
+      nextFunction(error);
+    }
+  };
+
   respond = async (request, response, nextFunction) => {
     try {
       const { error, value } = offerValidation.ValidateRespond(request.body);

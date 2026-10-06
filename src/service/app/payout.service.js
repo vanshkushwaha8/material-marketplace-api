@@ -44,11 +44,14 @@ async function evaluateAndInitiatePayout({ transactionId, req }) {
     // Snapshot of the amounts locked on the transaction at capture time.
     const commissionAmount = txn.platformCommissionAmount || 0;
     const processingFeeAmount = fromPaise(Math.round(toPaise(txn.agreedAmount) * (PAYMENT_PROCESSING_FEE_PCT / 100)));
-    const netPayoutAmount = fromPaise(toPaise(txn.agreedAmount) - toPaise(commissionAmount) - toPaise(processingFeeAmount));
+    // Delivery charge (paid by the buyer at checkout) goes to the seller in
+    // full — no commission or processing fee on it.
+    const deliveryChargeAmount = txn.deliveryCharge || 0;
+    const netPayoutAmount = fromPaise(toPaise(txn.agreedAmount) - toPaise(commissionAmount) - toPaise(processingFeeAmount) + toPaise(deliveryChargeAmount));
     try {
       payout = await payoutModel.create({
         transaction: txn._id, seller: txn.seller,
-        grossAmount: txn.agreedAmount, platformCommissionAmount: commissionAmount,
+        grossAmount: txn.agreedAmount, platformCommissionAmount: commissionAmount, deliveryChargeAmount,
         paymentProcessingFeeAmount: processingFeeAmount, netPayoutAmount, currency: txn.currency || 'INR',
         status: PAYOUT_STATES.PENDING, history: [{ action: 'CREATED' }],
       });

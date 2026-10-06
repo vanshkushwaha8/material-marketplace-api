@@ -11,7 +11,12 @@
 jest.mock('../service/admin/adminNotification.service', () => ({ notifyAdmins: jest.fn().mockResolvedValue(null) }));
 jest.mock('../model/payment.model', () => ({ findOne: jest.fn(), findById: jest.fn(), findOneAndUpdate: jest.fn(), findByIdAndUpdate: jest.fn(), updateOne: jest.fn() }));
 jest.mock('../model/paymentWebhookEvent.model', () => ({ create: jest.fn() }));
-jest.mock('../model/transaction.model', () => ({}));
+// The order the payment belongs to (its current total) — matches
+// storedPayment's 1200000 paise unless a test changes it.
+let mockOrderTxn = { agreedAmount: 12000, totalPayable: null };
+jest.mock('../model/transaction.model', () => ({
+  findById: jest.fn(() => ({ select: () => ({ lean: () => Promise.resolve(mockOrderTxn) }) })),
+}));
 jest.mock('../model/payout.model', () => ({}));
 jest.mock('../service/app/transaction.service', () => ({ markPaymentConfirmed: jest.fn() }));
 jest.mock('../service/app/notification.service', () => ({ createNotification: jest.fn().mockResolvedValue(undefined) }));
@@ -38,6 +43,7 @@ function capturedEvent(entityOverrides = {}) {
 describe('payment capture safety', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockOrderTxn = { agreedAmount: 12000, totalPayable: null };
     paymentWebhookEventModel.create.mockResolvedValue({});
     paymentModel.findOne.mockResolvedValue(storedPayment);
     paymentModel.findByIdAndUpdate.mockResolvedValue({ ...storedPayment, reconciliationRequired: true });
@@ -103,6 +109,35 @@ describe('payment capture safety', () => {
       expect.anything()
     );
     expect(notificationService.createNotification).not.toHaveBeenCalled();
+  });
+
+  test('a capture at an outdated amount (order total changed, e.g. delivery added) is flagged, not applied', async () => {
+    mockOrderTxn = { agreedAmount: 12000, totalPayable: 12390 }; // 12000 + fee + delivery
+    paymentModel.findOneAndUpdate.mockResolvedValue({ ...storedPayment, status: 'SUCCESS' });
+
+    await paymentService.handleWebhook({ rawBody: Buffer.from('{}'), signature: 'sig', payload: capturedEvent() });
+
+    expect(paymentModel.findByIdAndUpdate).toHaveBeenCalledWith(
+      'pay-1',
+      expect.objectContaining({ $set: expect.objectContaining({ reconciliationRequired: true, reconciliationReason: expect.stringContaining('order total') }) }),
+      expect.anything()
+    );
+    expect(transactionService.markPaymentConfirmed).not.toHaveBeenCalled();
+    expect(notificationService.createNotification).not.toHaveBeenCalled();
+  });
+
+  test('a capture on a payment order cancelled at checkout is flagged for refund', async () => {
+    paymentModel.findOneAndUpdate.mockResolvedValue(null); // CANCELLED is not a confirmable status
+    paymentModel.findById.mockResolvedValue({ ...storedPayment, status: 'CANCELLED' });
+
+    await paymentService.handleWebhook({ rawBody: Buffer.from('{}'), signature: 'sig', payload: capturedEvent() });
+
+    expect(paymentModel.findByIdAndUpdate).toHaveBeenCalledWith(
+      'pay-1',
+      expect.objectContaining({ $set: expect.objectContaining({ reconciliationRequired: true }) }),
+      expect.anything()
+    );
+    expect(transactionService.markPaymentConfirmed).not.toHaveBeenCalled();
   });
 
   test('checkout callback: provider amount mismatch is rejected even with a valid signature', async () => {

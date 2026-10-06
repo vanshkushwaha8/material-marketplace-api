@@ -70,6 +70,16 @@ const configEnv = {
   // ── Marketplace rules ──
   // Default commission until an admin sets a rate per seller type.
   MARKETPLACE_COMMISSION_PCT: process.env.MARKETPLACE_COMMISSION_PCT || '8.9',
+  // Buyer-side convenience fee, % of the final product price, added on top
+  // at payment (platform revenue — never part of the seller's settlement).
+  BUYER_FEE_PCT_STORE: process.env.BUYER_FEE_PCT_STORE || '2',
+  BUYER_FEE_PCT_INDIVIDUAL: process.env.BUYER_FEE_PCT_INDIVIDUAL || '3',
+  // Delivery rate card used until an admin saves one (Admin → Delivery
+  // rates): charge = base + perKm × distance + perKg × total weight.
+  DELIVERY_BASE_CHARGE: process.env.DELIVERY_BASE_CHARGE || '50',
+  DELIVERY_PER_KM: process.env.DELIVERY_PER_KM || '10',
+  DELIVERY_PER_KG: process.env.DELIVERY_PER_KG || '0.5',
+  DELIVERY_MAX_KM: process.env.DELIVERY_MAX_KM || '50',
   RESERVATION_EXPIRY_HOURS: process.env.RESERVATION_EXPIRY_HOURS || '48',
   ADMIN_HIGH_VALUE_DEAL_INR: process.env.ADMIN_HIGH_VALUE_DEAL_INR || '500000',
 

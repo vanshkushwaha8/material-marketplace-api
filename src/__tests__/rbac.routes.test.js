@@ -67,9 +67,9 @@ const APP = {
   'PATCH /seller/material-listings/:id/status': S, 'DELETE /seller/material-listings/:id': S,
   'GET /seller/store-profile': S, 'PATCH /seller/store-profile': S, 'GET /seller/dashboard-summary': S,
   // offers
-  'POST /offers': B, 'GET /buyer/offers': B, 'GET /seller/offers': S, 'PATCH /offers/:id': BS, 'GET /offers/:id': BS,
+  'POST /offers': B, 'POST /buy-now': B, 'GET /buyer/offers': B, 'GET /seller/offers': S, 'PATCH /offers/:id': BS, 'GET /offers/:id': BS,
   // orders & payments
-  'POST /transactions/:id/cancel': B, 'POST /transactions/:id/confirm-receipt': B, 'GET /buyer/transactions': B,
+  'POST /transactions/:id/cancel': B, 'PATCH /transactions/:id/fulfilment': B, 'GET /transactions/:id/delivery-quote': B, 'POST /transactions/:id/confirm-receipt': B, 'GET /buyer/transactions': B,
   'POST /transactions/:id/handover': S, 'GET /seller/transactions': S,
   'POST /transactions/:id/dispute': BS, 'GET /transactions/:id': BS,
   'POST /transactions/:id/payment-order': B, 'POST /payments/verify': B, 'POST /transactions/:id/manual-test-payment': B,
@@ -122,6 +122,7 @@ const ADMIN = {
   'GET /payment-history': 'all(payment:read)', 'POST /payments/:id/refund': 'all(payment:refund)',
   'GET /commission-history': 'all(commission:read)', 'GET /commission-settings': 'all(commission:read)',
   'PUT /commission-settings': 'all(commission:update)',
+  'GET /delivery-rates': 'all(commission:read)', 'PUT /delivery-rates': 'all(commission:update)',
   'GET /settlement-history': 'all(settlement:read)',
   'GET /userconsent/get': 'all(legal_document:read)', 'POST /userconsent/add': 'all(legal_document:manage)',
   'POST /userconsent/update': 'all(legal_document:manage)', 'DELETE /userconsent/delete': 'all(legal_document:manage)',

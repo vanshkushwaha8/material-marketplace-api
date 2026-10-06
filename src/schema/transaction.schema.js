@@ -48,6 +48,18 @@ const transactionSchema = new mongoose.Schema(
     unitPrice: { type: Number, required: true, min: 0 },
         currency: { type: String, default: 'INR' },
 
+    // Buyer convenience fee, snapshotted at creation: buyerFeePct of
+    // agreedAmount, charged on top (totalPayable = agreedAmount + fee).
+    // Platform revenue — commission/settlement stay based on agreedAmount.
+    // null totalPayable = created before the fee existed (pays agreedAmount).
+    buyerFeePct: { type: Number, default: 0 },
+    buyerFeeAmount: { type: Number, default: 0 },
+    // Delivery charge quoted at checkout (0 for store pickup). Goes to the
+    // seller with their settlement — no commission on it.
+    // totalPayable = agreedAmount + buyerFeeAmount + deliveryCharge.
+    deliveryCharge: { type: Number, default: 0, min: 0 },
+    totalPayable: { type: Number, default: null },
+
     status: { type: String, enum: Object.values(TRANSACTION_STATES), default: TRANSACTION_STATES.PAYMENT_PENDING, index: true },
 
     // Inventory held for this transaction only until this timestamp —
@@ -112,6 +124,32 @@ const transactionSchema = new mongoose.Schema(
     ],
 
     project: { type: mongoose.Schema.Types.ObjectId, ref: 'projects', default: null },
+
+    // OFFER: seller accepted a negotiated offer. BUY_NOW: store product
+    // bought at its listed price from the checkout page.
+    source: { type: String, enum: ['OFFER', 'BUY_NOW'], default: 'OFFER' },
+
+    // How the buyer gets the material — chosen on the checkout page before
+    // payment (required for BUY_NOW, see payment.service#loadPayableTransaction).
+    // The address is a snapshot, so a later edit of the buyer's saved
+    // address never changes what the seller was told.
+    fulfilment: {
+      method: { type: String, enum: ['DELIVERY', 'PICKUP', null], default: null },
+      addressLabel: { type: String, trim: true, maxlength: 60, default: '' },
+      address: { type: String, trim: true, maxlength: 300, default: '' },
+      contactName: { type: String, trim: true, maxlength: 80, default: '' },
+      contactPhone: { type: String, trim: true, maxlength: 15, default: '' },
+      note: { type: String, trim: true, maxlength: 300, default: '' },
+      // Delivery pricing snapshot (DELIVERY only): which saved address and
+      // map point, how far, how heavy, and the rate card version used.
+      deliveryLocation: { type: mongoose.Schema.Types.ObjectId, ref: 'delivery_locations', default: null },
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null },
+      distanceKm: { type: Number, default: null },
+      weightKg: { type: Number, default: null },
+      rateSetting: { type: mongoose.Schema.Types.ObjectId, ref: 'delivery_rate_settings', default: null },
+      updatedAt: { type: Date, default: null },
+    },
 
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },
   },

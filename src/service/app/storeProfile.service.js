@@ -12,6 +12,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const materialListingService = require('./materialListing.service');
 const materialListingModel = require('../../model/materialListing.model');
+const { LISTING_STATES } = require('../../constants/materialListing.constants');
 
 class StoreProfileError extends Error {
   constructor(message, statusCode = 400) { super(message); this.name = 'StoreProfileError'; this.statusCode = statusCode; }
@@ -178,10 +179,37 @@ async function loadPublicStoreProfile(sellerId) {
   };
 }
 
-async function getStoreProducts({ sellerId, page, limit, category }) {
+const STORE_PRODUCT_SORTS = ['newest', 'price_asc', 'price_desc'];
+
+// Buyer-visible product count per category NAME (+ total) for the store
+// page's category sidebar — the whole store, independent of the current
+// search/category filter, so the counts don't jump while a buyer filters.
+// Same LIVE/SOLD_OUT visibility as materialListingService.search.
+async function getStoreCategoryCounts(sellerId) {
+  const rows = await materialListingModel.aggregate([
+    { $match: { seller: new mongoose.Types.ObjectId(sellerId), status: { $in: [LISTING_STATES.LIVE, LISTING_STATES.SOLD_OUT] }, is_deleted: deleteConstants.NOT_DELETED } },
+    { $group: { _id: '$category', n: { $sum: 1 } } },
+  ]);
+  const names = await materialCategoryModel.find({ _id: { $in: rows.map((r) => r._id).filter(Boolean) } }).select('name').lean();
+  const nameById = new Map(names.map((c) => [String(c._id), c.name]));
+  const categoryCounts = {};
+  let totalCount = 0;
+  for (const r of rows) {
+    totalCount += r.n;
+    const name = nameById.get(String(r._id));
+    if (name) categoryCounts[name] = (categoryCounts[name] || 0) + r.n;
+  }
+  return { categoryCounts, totalCount };
+}
+
+async function getStoreProducts({ sellerId, page, limit, category, search, sort }) {
   if (!mongoose.Types.ObjectId.isValid(sellerId)) throw new StoreProfileError('Invalid store id', 404);
   const seller = await userModel.findById(sellerId).select('sellerType');
   if (!seller || seller.sellerType !== SELLER_TYPES.BUSINESS_STORE) throw new StoreProfileError('Store not found', 404);
+  if (search !== undefined && typeof search !== 'string') throw new StoreProfileError('Invalid search', 400);
+  const text = (search || '').trim().slice(0, 100);
+  const sortKey = STORE_PRODUCT_SORTS.includes(sort) ? sort : 'newest';
+  const facets = await getStoreCategoryCounts(sellerId);
   // materialListing.service.js#search already restricts to buyer-visible
   // statuses and attaches storeProfile info — reused rather than
   // duplicating the query here.
@@ -194,11 +222,12 @@ async function getStoreProducts({ sellerId, page, limit, category }) {
     if (typeof category !== 'string') throw new StoreProfileError('Invalid category', 400);
     const materialCategory = await materialCategoryModel.findOne({ name: category, is_deleted: deleteConstants.NOT_DELETED }).select('_id');
     if (!materialCategory) {
-      return { getData: [], count: 0, page: Math.max(1, Number(page) || 1), limit: Math.min(100, Number(limit) || 20) };
+      return { getData: [], count: 0, page: Math.max(1, Number(page) || 1), limit: Math.min(100, Number(limit) || 20), ...facets };
     }
     materialCategoryId = materialCategory._id;
   }
-  return materialListingService.search({ sellerId, page, limit, category: materialCategoryId });
+  const result = await materialListingService.search({ sellerId, page, limit, category: materialCategoryId, search: text, sort: sortKey });
+  return { ...result, ...facets };
 }
 
 module.exports = {

@@ -28,6 +28,20 @@ class offerValidation {
     });
   }
 
+  // Buy Now (store listings): the amount is never client-supplied — the
+  // server prices it from the listing.
+  static buyNow() {
+    return Joi.object({
+      listing: objectId().required(),
+      project: objectId().optional().allow(null),
+      quantity: Joi.number().integer().min(1).required(),
+    });
+  }
+
+  static ValidateBuyNow(data) {
+    return this.buyNow().validate(data, { abortEarly: false, stripUnknown: true });
+  }
+
   static respond() {
     // action=ACCEPT needs nothing else; COUNTER needs amount;
     // REJECT/CANCEL take an optional message.

@@ -41,6 +41,9 @@ const materialListingSchema = new mongoose.Schema(
     reservedQuantity: { type: Number, default: 0, min: 0 },
     soldQuantity: { type: Number, default: 0, min: 0 },
     unit: { type: String, enum: MATERIAL_UNITS, required: true },
+    // Weight of one `unit` in kg — the weight part of the delivery charge
+    // (deliveryRate.service#quote). null = not given (weight charge 0).
+    weightPerUnitKg: { type: Number, min: 0, default: null },
     price: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'INR' },
     negotiable: { type: Boolean, default: true },

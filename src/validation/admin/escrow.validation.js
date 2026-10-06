@@ -26,5 +26,18 @@ class adminEscrowValidation {
 
   static ValidateAction(b) { return this.action().validate(b, { abortEarly: false, stripUnknown: true }); }
   static ValidateCommission(b) { return this.commission().validate(b, { abortEarly: false, stripUnknown: true }); }
+
+  // Delivery rate card: charge = base + perKm × km + perKg × kg.
+  static deliveryRates() {
+    return Joi.object({
+      baseCharge: Joi.number().min(0).max(100000).precision(2).required(),
+      perKm: Joi.number().min(0).max(10000).precision(2).required(),
+      perKg: Joi.number().min(0).max(10000).precision(2).required(),
+      maxDistanceKm: Joi.number().min(1).max(2000).required(),
+      reason: Joi.string().trim().min(5).max(500).required(),
+    });
+  }
+
+  static ValidateDeliveryRates(b) { return this.deliveryRates().validate(b, { abortEarly: false, stripUnknown: true }); }
 }
 module.exports = adminEscrowValidation;

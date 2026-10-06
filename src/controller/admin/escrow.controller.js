@@ -2,6 +2,7 @@ const responseConstants = require('../../constants/response.constatnts');
 const statusCodes = require('../../constants/httpConstants');
 const adminEscrowService = require('../../service/admin/escrow.service');
 const commissionService = require('../../service/app/commission.service');
+const deliveryRateService = require('../../service/app/deliveryRate.service');
 const validation = require('../../validation/admin/escrow.validation');
 const { ADMIN_PERMISSIONS } = require('../../constants/rbac.constants');
 const { accessFor, hasAll, hasAny, FORBIDDEN_MESSAGE } = require('../../helper/authorization.helper');
@@ -70,6 +71,26 @@ class AdminEscrowController {
       if (error instanceof commissionService.CommissionError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
       nextFunction(error);
     }
+  };
+
+  // Delivery rate card (base + ₹/km + ₹/kg) — current + change history.
+  getDeliveryRates = async (request, response, nextFunction) => {
+    try {
+      const [current, rows] = await Promise.all([
+        deliveryRateService.getCurrentRates(),
+        deliveryRateService.history({ page: request.query.page, limit: request.query.limit }),
+      ]);
+      return responseConstants.success(response, 'Delivery rates fetched', { current, history: rows }, statusCodes.OK);
+    } catch (error) { nextFunction(error); }
+  };
+
+  updateDeliveryRates = async (request, response, nextFunction) => {
+    try {
+      const { error, value } = validation.ValidateDeliveryRates(request.body);
+      if (responseConstants.validatIonError(response, error)) return;
+      const row = await deliveryRateService.update({ ...value, adminId: request.auth._id, req: request });
+      return responseConstants.success(response, 'Delivery rates updated', row, statusCodes.OK);
+    } catch (error) { nextFunction(error); }
   };
 }
 

@@ -22,4 +22,17 @@ function unitPriceFromAmount(amount, quantity) {
   if (!quantity) return 0;
   return fromPaise(Math.round(toPaise(amount) / Number(quantity)));
 }
-module.exports = { toPaise, fromPaise, calculateCommissionPaise, unitPriceFromAmount };
+// What the buyer actually pays for a transaction: product price + buyer
+// convenience fee. Transactions created before the fee existed have no
+// totalPayable and pay agreedAmount, exactly as before.
+function payableAmount(txn) {
+  return txn.totalPayable != null ? txn.totalPayable : txn.agreedAmount;
+}
+
+// Fee on the final product price, rounded to the paisa.
+function buyerFeeFor(agreedAmount, pct) {
+  const feePaise = Math.round(toPaise(agreedAmount) * (Number(pct) || 0) / 100);
+  return { buyerFeeAmount: fromPaise(feePaise), totalPayable: fromPaise(toPaise(agreedAmount) + feePaise) };
+}
+
+module.exports = { toPaise, fromPaise, calculateCommissionPaise, unitPriceFromAmount, payableAmount, buyerFeeFor };

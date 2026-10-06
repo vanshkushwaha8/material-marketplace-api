@@ -10,6 +10,8 @@ const router = express.Router();
 const signedIn = [authMiddleware(), twoFactorAuthenticationCheck];
 
 router.post('/offers', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.OFFER_CREATE), offerController.create);
+// Buy Now on a store listing — creates an auto-accepted offer + payable transaction.
+router.post('/buy-now', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...signedIn, authorize(P.OFFER_CREATE), offerController.buyNow);
 router.patch('/offers/:id', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 100 }), ...signedIn, authorize(P.OFFER_RESPOND), offerController.respond);
 router.get('/offers/:id', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.OFFER_RESPOND), offerController.getOne);
 router.get('/buyer/offers', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.OFFER_CREATE), offerController.myAsBuyer);

@@ -14,6 +14,15 @@ class DeliveryLocationError extends Error {
   }
 }
 
+// Only the map/area fields actually sent (validation pairs lat with lng).
+function pointFields(body) {
+  const out = {};
+  for (const k of ['latitude', 'longitude', 'city', 'state', 'pincode']) {
+    if (body[k] !== undefined) out[k] = body[k];
+  }
+  return out;
+}
+
 async function list({ buyerId }) {
   const getData = await deliveryLocationModel
     .find({ buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED })
@@ -45,6 +54,7 @@ async function create({ buyerId, body, req }) {
     buyer: buyerId,
     label: body.label,
     address: body.address,
+    ...pointFields(body),
     isDefault,
   });
 
@@ -74,6 +84,7 @@ async function update({ buyerId, locationId, body, req }) {
 
   if (body.label !== undefined) location.label = body.label;
   if (body.address !== undefined) location.address = body.address;
+  Object.assign(location, pointFields(body));
   await location.save();
 
   await createAuditLog({ req, userId: buyerId, action: auditLogConstants.DELIVERY_LOCATION_UPDATED, entity: 'delivery_locations', entityId: locationId });

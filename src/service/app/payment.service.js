@@ -8,7 +8,7 @@ const deleteConstants = require('../../constants/delete.constants');
 const { PAYMENT_STATES } = require('../../constants/payment.constants');
 const { TRANSACTION_STATES, COMMISSION_STATES } = require('../../constants/transaction.constants');
 const { PAYOUT_STATES } = require('../../constants/payout.constants');
-const { toPaise } = require('../../helper/money.helper');
+const { toPaise, payableAmount } = require('../../helper/money.helper');
 const configenv = require('../../config/env.config');
 const { getPaymentAdapter, getManualTestPaymentAdapter } = require('../../config/integrations.config');
 const transactionService = require('./transaction.service');
@@ -58,12 +58,17 @@ async function loadPayableTransaction(transactionId, buyerId) {
   if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
     throw new PaymentError(`Cannot pay for a transaction in status ${txn.status}`, 409);
   }
+  // A Buy Now order must say how the material reaches the buyer before
+  // any money moves (set on the checkout page via PATCH …/fulfilment).
+  if (txn.source === 'BUY_NOW' && !txn.fulfilment?.method) {
+    throw new PaymentError('Choose delivery or store pickup before paying', 409);
+  }
   return txn;
 }
 
 async function createPaymentOrder({ transactionId, buyerId, req }) {
   const txn = await loadPayableTransaction(transactionId, buyerId);
-  await escrowSafe({ transactionId: txn._id, action: 'START_PAYMENT', actor: { type: ESCROW_ACTORS.BUYER, id: buyerId }, amount: txn.agreedAmount, req });
+  await escrowSafe({ transactionId: txn._id, action: 'START_PAYMENT', actor: { type: ESCROW_ACTORS.BUYER, id: buyerId }, amount: payableAmount(txn), req });
 
   const existing = await paymentModel.findOne({
     transaction: txn._id,
@@ -71,10 +76,19 @@ async function createPaymentOrder({ transactionId, buyerId, req }) {
     is_deleted: deleteConstants.NOT_DELETED,
   });
   if (existing) {
-    return buildOrderResponse(existing, txn);
+    if (existing.amountPaise === toPaise(payableAmount(txn))) return buildOrderResponse(existing, txn);
+    // Opened before the total changed (delivery chosen at checkout). Only a
+    // never-started order can be dropped; one mid-payment must finish first.
+    if (existing.status !== PAYMENT_STATES.CREATED) {
+      throw new PaymentError('A payment for this order is already in progress — wait for it to finish', 409);
+    }
+    await paymentModel.updateOne(
+      { _id: existing._id, status: PAYMENT_STATES.CREATED },
+      { $set: { status: PAYMENT_STATES.CANCELLED, failureReason: 'Order total changed' }, $push: { history: { action: 'CANCELLED_TOTAL_CHANGED' } } }
+    );
   }
 
-  const amountPaise = toPaise(txn.agreedAmount);
+  const amountPaise = toPaise(payableAmount(txn)); // product price + convenience fee + delivery
   const adapter = getPaymentAdapter();
   const { providerOrderId, raw } = await adapter.createOrder({
     amountPaise, currency: 'INR', receiptId: String(txn._id),
@@ -122,16 +136,26 @@ async function createManualTestPayment({ transactionId, buyerId, req }) {
   }
   const txn = await loadPayableTransaction(transactionId, buyerId);
   // Same escrow steps as the real checkout (INITIATED → PROCESSING → PAID).
-  await escrowSafe({ transactionId: txn._id, action: 'START_PAYMENT', actor: { type: ESCROW_ACTORS.BUYER, id: buyerId }, amount: txn.agreedAmount, req });
+  await escrowSafe({ transactionId: txn._id, action: 'START_PAYMENT', actor: { type: ESCROW_ACTORS.BUYER, id: buyerId }, amount: payableAmount(txn), req });
 
   let payment = await paymentModel.findOne({
     transaction: txn._id,
     status: { $in: [PAYMENT_STATES.CREATED, PAYMENT_STATES.PENDING, PAYMENT_STATES.PROCESSING] },
     is_deleted: deleteConstants.NOT_DELETED,
   });
+  // Same rule as createPaymentOrder: an order opened at an older total is
+  // dropped (if never started) rather than paid at the wrong amount.
+  if (payment && payment.amountPaise !== toPaise(payableAmount(txn))) {
+    if (payment.status !== PAYMENT_STATES.CREATED) throw new PaymentError('A payment for this order is already in progress — wait for it to finish', 409);
+    await paymentModel.updateOne(
+      { _id: payment._id, status: PAYMENT_STATES.CREATED },
+      { $set: { status: PAYMENT_STATES.CANCELLED, failureReason: 'Order total changed' }, $push: { history: { action: 'CANCELLED_TOTAL_CHANGED' } } }
+    );
+    payment = null;
+  }
 
   if (!payment) {
-    const amountPaise = toPaise(txn.agreedAmount);
+    const amountPaise = toPaise(payableAmount(txn)); // product price + convenience fee + delivery
     const adapter = getManualTestPaymentAdapter();
     const { providerOrderId } = await adapter.createOrder({ amountPaise, currency: 'INR', receiptId: String(txn._id) });
     try {
@@ -171,7 +195,11 @@ function buildOrderResponse(payment, txn) {
       material: undefined, // populated by the controller if needed via txn.listing
       quantity: txn.agreedQuantity,
       unitPrice: txn.unitPrice,
-      totalPayable: txn.agreedAmount,
+      productAmount: txn.agreedAmount,
+      convenienceFeePct: txn.buyerFeePct || 0,
+      convenienceFee: txn.buyerFeeAmount || 0,
+      deliveryCharge: txn.deliveryCharge || 0,
+      totalPayable: payableAmount(txn),
     },
   };
 }
@@ -276,7 +304,22 @@ async function confirmPaymentSuccess({ payment, providerPaymentId, method, req }
     },
     { new: true }
   );
-  if (!fresh) return paymentModel.findById(payment._id); // the other path already handled it
+  if (!fresh) {
+    const current = await paymentModel.findById(payment._id);
+    // A capture on an order we cancelled (its total changed at checkout):
+    // real money that must not be dropped silently.
+    if (current?.status === PAYMENT_STATES.CANCELLED) {
+      return flagForReconciliation(current._id, 'Captured on a payment order cancelled after the order total changed — refund or reconcile', req);
+    }
+    return current; // the other path already handled it
+  }
+
+  // Never mark an order paid with a different amount than it now costs
+  // (e.g. delivery added after this payment order was opened).
+  const orderTxn = await transactionModel.findById(fresh.transaction).select('agreedAmount totalPayable').lean();
+  if (orderTxn && toPaise(payableAmount(orderTxn)) !== Number(fresh.amountPaise)) {
+    return flagForReconciliation(fresh._id, `Captured ${fresh.amountPaise} paise but the order total is ${toPaise(payableAmount(orderTxn))} — refund or reconcile`, req);
+  }
 
   const { txn, advanced } = await transactionService.markPaymentConfirmed({ transactionId: fresh.transaction, providerPaymentId, req });
   if (!advanced) {
@@ -419,7 +462,7 @@ async function handleRefundProcessed(entity) {
   if (txn.escrowStatus === ESCROW_STATES.REFUNDED) return; // duplicate delivery
   if (ESCROW_TRANSITIONS.REQUEST_REFUND.from.includes(txn.escrowStatus)) {
     // Refunded from the provider dashboard: record it the same way.
-    await escrowSafe({ transactionId: txn._id, action: 'REQUEST_REFUND', actor: { type: ESCROW_ACTORS.PROVIDER }, reason: 'Refund initiated at the payment provider', providerRef: entity.id, amount: txn.agreedAmount, set: { 'refund.status': 'PENDING', 'refund.amount': txn.agreedAmount, 'refund.requestedAt': new Date() } });
+    await escrowSafe({ transactionId: txn._id, action: 'REQUEST_REFUND', actor: { type: ESCROW_ACTORS.PROVIDER }, reason: 'Refund initiated at the payment provider', providerRef: entity.id, amount: payableAmount(txn), set: { 'refund.status': 'PENDING', 'refund.amount': payableAmount(txn), 'refund.requestedAt': new Date() } });
     await refundService.completeRefund({ transactionId: txn._id, providerRefundId: entity.id, amountPaise: entity.amount });
     return;
   }

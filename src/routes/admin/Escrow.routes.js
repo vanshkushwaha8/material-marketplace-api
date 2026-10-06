@@ -21,4 +21,8 @@ router.get('/payments/attention', read, adminMiddleWare, authorize(A.TRANSACTION
 router.get('/commission-settings', read, adminMiddleWare, authorize(A.COMMISSION_READ), controller.getCommission);
 router.put('/commission-settings', write, adminMiddleWare, authorize(A.COMMISSION_UPDATE), controller.updateCommission);
 
+// Delivery rate card — a pricing setting like commission, same permissions.
+router.get('/delivery-rates', read, adminMiddleWare, authorize(A.COMMISSION_READ), controller.getDeliveryRates);
+router.put('/delivery-rates', write, adminMiddleWare, authorize(A.COMMISSION_UPDATE), controller.updateDeliveryRates);
+
 module.exports = router;

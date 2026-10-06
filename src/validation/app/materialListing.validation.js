@@ -23,6 +23,8 @@ class materialListingValidation {
       supplyType: Joi.string().valid(...Object.values(SUPPLY_TYPES)).optional(),
       quantity: Joi.number().positive().required(),
       unit: Joi.string().valid(...MATERIAL_UNITS).required(),
+      // Weight of ONE unit in kg (e.g. a cement bag = 50) — prices delivery.
+      weightPerUnitKg: Joi.number().min(0).max(100000).allow(null).optional(),
       price: Joi.number().min(0).required(),
       currency: Joi.string().trim().default('INR'),
       // No Joi default — materialListing.service.js#createListing needs to

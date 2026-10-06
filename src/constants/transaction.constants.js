@@ -42,4 +42,12 @@ const COMMISSION_STATES = Object.freeze({
 // reservation is released back to available stock.
 const RESERVATION_EXPIRY_HOURS = Number(configenv.RESERVATION_EXPIRY_HOURS) || 48;
 
-module.exports = { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES, COMMISSION_STATES, RESERVATION_EXPIRY_HOURS };
+// Buyer convenience fee (% of agreedAmount) by the seller's type —
+// snapshotted onto each transaction when it is created.
+const num = (v, d) => (Number.isFinite(Number(v)) && v !== '' ? Number(v) : d);
+const BUYER_FEE_PCT = Object.freeze({
+  BUSINESS_STORE: num(configenv.BUYER_FEE_PCT_STORE, 2),
+  INDIVIDUAL: num(configenv.BUYER_FEE_PCT_INDIVIDUAL, 3),
+});
+
+module.exports = { TRANSACTION_STATES, TRANSACTION_TERMINAL_STATES, SETTLEMENT_STATES, COMMISSION_STATES, RESERVATION_EXPIRY_HOURS, BUYER_FEE_PCT };

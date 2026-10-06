@@ -14,6 +14,31 @@ class TransactionController {
     }
   };
 
+  setFulfilment = async (request, response, nextFunction) => {
+    try {
+      const { error, value } = transactionValidation.ValidateFulfilment(request.body || {});
+      const validationError = responseConstants.validatIonError(response, error);
+      if (validationError) return;
+      const fulfilment = await transactionService.setFulfilment({ transactionId: request.params.id, userId: request.auth._id, body: value, req: request });
+      return responseConstants.success(response, 'Delivery details saved', fulfilment, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof transactionService.TransactionError) return responseConstants.BadRequest(response, error.message, error.code ? { code: error.code } : null, error.statusCode);
+      nextFunction(error);
+    }
+  };
+
+  deliveryQuote = async (request, response, nextFunction) => {
+    try {
+      const quote = await transactionService.deliveryQuote({ transactionId: request.params.id, userId: request.auth._id, addressId: request.query.addressId });
+      return responseConstants.success(response, 'Delivery quote', quote, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof transactionService.TransactionError) {
+        return responseConstants.BadRequest(response, error.message, error.code ? { code: error.code } : null, error.statusCode);
+      }
+      nextFunction(error);
+    }
+  };
+
   markHandover = async (request, response, nextFunction) => {
     try {
       const { error, value } = transactionValidation.ValidateHandover(request.body || {});

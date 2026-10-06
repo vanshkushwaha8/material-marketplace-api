@@ -10,6 +10,8 @@ const router = express.Router();
 const signedIn = [authMiddleware(), twoFactorAuthenticationCheck];
 
 router.post('/transactions/:id/cancel', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.cancel);
+router.get('/transactions/:id/delivery-quote', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.deliveryQuote);
+router.patch('/transactions/:id/fulfilment', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.setFulfilment);
 router.post('/transactions/:id/handover', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_FULFIL), transactionController.markHandover);
 router.post('/transactions/:id/confirm-receipt', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.confirmReceipt);
 router.post('/transactions/:id/dispute', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...signedIn, authorize(P.ORDER_DISPUTE), transactionController.raiseDispute);
