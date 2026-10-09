@@ -10,7 +10,14 @@ const router = express.Router();
 const signedIn = [authMiddleware(), twoFactorAuthenticationCheck];
 
 router.post('/transactions/:id/cancel', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.cancel);
-router.get('/transactions/:id/delivery-quote', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.deliveryQuote);
+// Seller-quoted delivery (deliveryQuote.service). Buyer: preview, accept,
+// reject (choosing delivery itself is PATCH …/fulfilment). Seller: quote, decline.
+router.get('/transactions/:id/delivery-requirement', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.deliveryRequirement);
+router.post('/transactions/:id/delivery-quote', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_FULFIL), transactionController.submitDeliveryQuote);
+router.post('/transactions/:id/delivery-quote/decline', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...signedIn, authorize(P.ORDER_FULFIL), transactionController.declineDelivery);
+router.post('/transactions/:id/delivery-quote/accept', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.acceptDeliveryQuote);
+router.post('/transactions/:id/delivery-quote/reject', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.rejectDeliveryQuote);
+router.get('/vehicle-types', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.ORDER_READ), transactionController.vehicleTypes);
 router.patch('/transactions/:id/fulfilment', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.setFulfilment);
 router.post('/transactions/:id/handover', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_FULFIL), transactionController.markHandover);
 router.post('/transactions/:id/confirm-receipt', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.confirmReceipt);

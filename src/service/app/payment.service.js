@@ -12,6 +12,7 @@ const { toPaise, payableAmount } = require('../../helper/money.helper');
 const configenv = require('../../config/env.config');
 const { getPaymentAdapter, getManualTestPaymentAdapter } = require('../../config/integrations.config');
 const transactionService = require('./transaction.service');
+const deliveryQuoteService = require('./deliveryQuote.service');
 const { createAuditLog, createAuditLogAdmin } = require('../../helper/audit.helper');
 const auditLogConstants = require('../../constants/auditLogConstants');
 const notificationService = require('./notification.service');
@@ -58,10 +59,20 @@ async function loadPayableTransaction(transactionId, buyerId) {
   if (txn.status !== TRANSACTION_STATES.PAYMENT_PENDING) {
     throw new PaymentError(`Cannot pay for a transaction in status ${txn.status}`, 409);
   }
-  // A Buy Now order must say how the material reaches the buyer before
-  // any money moves (set on the checkout page via PATCH …/fulfilment).
-  if (txn.source === 'BUY_NOW' && !txn.fulfilment?.method) {
-    throw new PaymentError('Choose delivery or store pickup before paying', 409);
+  // Every order (Buy Now or accepted offer) must say how the material
+  // reaches the buyer before any money moves — set on the checkout page via
+  // PATCH …/fulfilment.
+  if (!txn.fulfilment?.method) {
+    const err = new PaymentError('Choose delivery or pickup before paying', 409);
+    err.code = 'FULFILMENT_REQUIRED';
+    throw err;
+  }
+  // Delivery is payable only once the buyer accepted the seller's quote, so
+  // the amount charged is always one the buyer agreed to.
+  if (!deliveryQuoteService.readyForPayment(txn)) {
+    const err = new PaymentError('Delivery isn\'t agreed yet: wait for the seller\'s quote, then accept it on the checkout page', 409);
+    err.code = 'DELIVERY_QUOTE_PENDING';
+    throw err;
   }
   return txn;
 }
@@ -316,9 +327,14 @@ async function confirmPaymentSuccess({ payment, providerPaymentId, method, req }
 
   // Never mark an order paid with a different amount than it now costs
   // (e.g. delivery added after this payment order was opened).
-  const orderTxn = await transactionModel.findById(fresh.transaction).select('agreedAmount totalPayable').lean();
+  const orderTxn = await transactionModel.findById(fresh.transaction).select('agreedAmount totalPayable fulfilment.method delivery.status').lean();
   if (orderTxn && toPaise(payableAmount(orderTxn)) !== Number(fresh.amountPaise)) {
     return flagForReconciliation(fresh._id, `Captured ${fresh.amountPaise} paise but the order total is ${toPaise(payableAmount(orderTxn))} — refund or reconcile`, req);
+  }
+  // Same rule as loadPayableTransaction, re-checked at capture: a delivery
+  // order whose quote isn't accepted must never be marked paid.
+  if (orderTxn && !deliveryQuoteService.readyForPayment(orderTxn)) {
+    return flagForReconciliation(fresh._id, `Captured while the delivery quote was ${orderTxn.delivery?.status} (not accepted) — refund or reconcile`, req);
   }
 
   const { txn, advanced } = await transactionService.markPaymentConfirmed({ transactionId: fresh.transaction, providerPaymentId, req });

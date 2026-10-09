@@ -39,5 +39,24 @@ class adminEscrowValidation {
   }
 
   static ValidateDeliveryRates(b) { return this.deliveryRates().validate(b, { abortEarly: false, stripUnknown: true }); }
+
+  // Delivery vehicle class. code is fixed once created (orders snapshot it);
+  // maxPayloadKg null = no payload figure (never auto-recommended).
+  static vehicleType({ create }) {
+    const req = (schema) => (create ? schema.required() : schema.optional());
+    return Joi.object({
+      code: create ? Joi.string().trim().uppercase().pattern(/^[A-Z0-9_]{2,40}$/).required()
+        .messages({ 'string.pattern.base': 'Code: 2–40 capital letters, digits or _' }) : Joi.forbidden(),
+      name: req(Joi.string().trim().min(2).max(60)),
+      description: Joi.string().trim().max(200).allow(''),
+      maxPayloadKg: Joi.number().min(0).max(200000).allow(null),
+      autoRecommend: Joi.boolean(),
+      sortOrder: Joi.number().integer().min(0).max(100000),
+      active: Joi.boolean(),
+      reason: Joi.string().trim().max(500).allow(''),
+    }).min(1);
+  }
+
+  static ValidateVehicleType(b, opts) { return this.vehicleType(opts).validate(b, { abortEarly: false, stripUnknown: true }); }
 }
 module.exports = adminEscrowValidation;

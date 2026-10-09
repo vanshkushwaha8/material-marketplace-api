@@ -9,7 +9,7 @@ class PaymentController {
       const order = await paymentService.createPaymentOrder({ transactionId: request.params.id, buyerId: request.auth._id, req: request });
       return responseConstants.success(response, 'Payment order created', order, statusCodes.CREATED);
     } catch (error) {
-      if (error instanceof paymentService.PaymentError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      if (error instanceof paymentService.PaymentError) return responseConstants.BadRequest(response, error.message, error.code ? { code: error.code } : null, error.statusCode);
       nextFunction(error);
     }
   };
@@ -19,7 +19,7 @@ class PaymentController {
       const payment = await paymentService.createManualTestPayment({ transactionId: request.params.id, buyerId: request.auth._id, req: request });
       return responseConstants.success(response, 'Test payment successful — no real money was charged', payment, statusCodes.OK);
     } catch (error) {
-      if (error instanceof paymentService.PaymentError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      if (error instanceof paymentService.PaymentError) return responseConstants.BadRequest(response, error.message, error.code ? { code: error.code } : null, error.statusCode);
       nextFunction(error);
     }
   };
@@ -33,7 +33,7 @@ class PaymentController {
       const result = await paymentService.verifyPayment({ buyerId: request.auth._id, providerOrderId, providerPaymentId, signature, req: request });
       return responseConstants.success(response, 'Payment verified', result.payment, statusCodes.OK);
     } catch (error) {
-      if (error instanceof paymentService.PaymentError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      if (error instanceof paymentService.PaymentError) return responseConstants.BadRequest(response, error.message, error.code ? { code: error.code } : null, error.statusCode);
       nextFunction(error);
     }
   };

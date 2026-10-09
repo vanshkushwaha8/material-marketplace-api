@@ -2,6 +2,7 @@ const responseConstants = require('../../constants/response.constatnts');
 const statusCodes = require('../../constants/httpConstants');
 const transactionService = require('../../service/app/transaction.service');
 const transactionValidation = require('../../validation/app/transaction.validation');
+const vehicleTypeService = require('../../service/app/vehicleType.service');
 
 class TransactionController {
   cancel = async (request, response, nextFunction) => {
@@ -27,14 +28,46 @@ class TransactionController {
     }
   };
 
-  deliveryQuote = async (request, response, nextFunction) => {
+  // Checkout preview: order weight, suggested vehicle, vehicle list, distance.
+  deliveryRequirement = async (request, response, nextFunction) => {
     try {
-      const quote = await transactionService.deliveryQuote({ transactionId: request.params.id, userId: request.auth._id, addressId: request.query.addressId });
-      return responseConstants.success(response, 'Delivery quote', quote, statusCodes.OK);
+      const data = await transactionService.deliveryRequirement({ transactionId: request.params.id, userId: request.auth._id, addressId: request.query.addressId });
+      return responseConstants.success(response, 'Delivery requirement', data, statusCodes.OK);
     } catch (error) {
       if (error instanceof transactionService.TransactionError) {
         return responseConstants.BadRequest(response, error.message, error.code ? { code: error.code } : null, error.statusCode);
       }
+      nextFunction(error);
+    }
+  };
+
+  // One handler per delivery-quote action; the route decides the action
+  // and its permission, the validator its body.
+  deliveryQuoteAction = (action, validate, successMessage) => async (request, response, nextFunction) => {
+    try {
+      const { error, value } = validate(request.body || {});
+      const validationError = responseConstants.validatIonError(response, error);
+      if (validationError) return;
+      const txn = await transactionService.respondToDeliveryQuote({ transactionId: request.params.id, userId: request.auth._id, body: { ...value, action }, req: request });
+      return responseConstants.success(response, successMessage, txn, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof transactionService.TransactionError) {
+        return responseConstants.BadRequest(response, error.message, error.code ? { code: error.code } : null, error.statusCode);
+      }
+      nextFunction(error);
+    }
+  };
+
+  submitDeliveryQuote = this.deliveryQuoteAction('QUOTE', (b) => transactionValidation.ValidateDeliveryQuote(b), 'Delivery quote sent to the buyer');
+  declineDelivery = this.deliveryQuoteAction('DECLINE', (b) => transactionValidation.ValidateDeliveryDecline(b), 'Delivery declined — the buyer has been told');
+  acceptDeliveryQuote = this.deliveryQuoteAction('ACCEPT', (b) => transactionValidation.ValidateDeliveryAnswer(b), 'Delivery accepted — you can pay now');
+  rejectDeliveryQuote = this.deliveryQuoteAction('REJECT', (b) => transactionValidation.ValidateDeliveryAnswer(b), 'Delivery quote rejected');
+
+  vehicleTypes = async (request, response, nextFunction) => {
+    try {
+      const rows = await vehicleTypeService.listActive();
+      return responseConstants.success(response, 'Vehicle types', rows, statusCodes.OK);
+    } catch (error) {
       nextFunction(error);
     }
   };
@@ -96,7 +129,7 @@ class TransactionController {
 
   myAsSeller = async (request, response, nextFunction) => {
     try {
-      const result = await transactionService.myTransactions({ userId: request.auth._id, role: 'seller', status: request.query.status, page: request.query.page, limit: request.query.limit });
+      const result = await transactionService.myTransactions({ userId: request.auth._id, role: 'seller', status: request.query.status, deliveryStatus: request.query.deliveryStatus, page: request.query.page, limit: request.query.limit });
       return responseConstants.success(response, 'Your transactions fetched', result, statusCodes.OK);
     } catch (error) {
       nextFunction(error);

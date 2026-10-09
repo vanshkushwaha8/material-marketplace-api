@@ -24,5 +24,9 @@ router.put('/commission-settings', write, adminMiddleWare, authorize(A.COMMISSIO
 // Delivery rate card — a pricing setting like commission, same permissions.
 router.get('/delivery-rates', read, adminMiddleWare, authorize(A.COMMISSION_READ), controller.getDeliveryRates);
 router.put('/delivery-rates', write, adminMiddleWare, authorize(A.COMMISSION_UPDATE), controller.updateDeliveryRates);
+// Delivery vehicle catalogue — same pricing-settings permissions.
+router.get('/vehicle-types', read, adminMiddleWare, authorize(A.COMMISSION_READ), controller.listVehicleTypes);
+router.post('/vehicle-types', write, adminMiddleWare, authorize(A.COMMISSION_UPDATE), controller.createVehicleType);
+router.patch('/vehicle-types/:id', write, adminMiddleWare, authorize(A.COMMISSION_UPDATE), controller.updateVehicleType);
 
 module.exports = router;

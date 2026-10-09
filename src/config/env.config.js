@@ -80,6 +80,11 @@ const configEnv = {
   DELIVERY_PER_KM: process.env.DELIVERY_PER_KM || '10',
   DELIVERY_PER_KG: process.env.DELIVERY_PER_KG || '0.5',
   DELIVERY_MAX_KM: process.env.DELIVERY_MAX_KM || '50',
+  // Seller-quoted delivery (delivery.constants.js): hours the seller has to
+  // quote, hours the buyer has to accept + pay, and a ₹ cap on a quote.
+  DELIVERY_SELLER_QUOTE_SLA_HOURS: process.env.DELIVERY_SELLER_QUOTE_SLA_HOURS || '24',
+  DELIVERY_BUYER_QUOTE_WINDOW_HOURS: process.env.DELIVERY_BUYER_QUOTE_WINDOW_HOURS || '24',
+  DELIVERY_MAX_CHARGE: process.env.DELIVERY_MAX_CHARGE || '500000',
   RESERVATION_EXPIRY_HOURS: process.env.RESERVATION_EXPIRY_HOURS || '48',
   ADMIN_HIGH_VALUE_DEAL_INR: process.env.ADMIN_HIGH_VALUE_DEAL_INR || '500000',
 

@@ -126,6 +126,21 @@ describe('payment capture safety', () => {
     expect(notificationService.createNotification).not.toHaveBeenCalled();
   });
 
+  test('a capture on a delivery order whose seller quote is not accepted is flagged, not applied', async () => {
+    // Amount matches, but delivery is still waiting for the seller.
+    mockOrderTxn = { agreedAmount: 12000, totalPayable: null, fulfilment: { method: 'DELIVERY' }, delivery: { status: 'AWAITING_SELLER' } };
+    paymentModel.findOneAndUpdate.mockResolvedValue({ ...storedPayment, status: 'SUCCESS' });
+
+    await paymentService.handleWebhook({ rawBody: Buffer.from('{}'), signature: 'sig', payload: capturedEvent() });
+
+    expect(paymentModel.findByIdAndUpdate).toHaveBeenCalledWith(
+      'pay-1',
+      expect.objectContaining({ $set: expect.objectContaining({ reconciliationRequired: true, reconciliationReason: expect.stringContaining('delivery quote') }) }),
+      expect.anything()
+    );
+    expect(transactionService.markPaymentConfirmed).not.toHaveBeenCalled();
+  });
+
   test('a capture on a payment order cancelled at checkout is flagged for refund', async () => {
     paymentModel.findOneAndUpdate.mockResolvedValue(null); // CANCELLED is not a confirmable status
     paymentModel.findById.mockResolvedValue({ ...storedPayment, status: 'CANCELLED' });

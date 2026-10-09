@@ -3,6 +3,7 @@ const statusCodes = require('../../constants/httpConstants');
 const adminEscrowService = require('../../service/admin/escrow.service');
 const commissionService = require('../../service/app/commission.service');
 const deliveryRateService = require('../../service/app/deliveryRate.service');
+const vehicleTypeService = require('../../service/admin/vehicleType.service');
 const validation = require('../../validation/admin/escrow.validation');
 const { ADMIN_PERMISSIONS } = require('../../constants/rbac.constants');
 const { accessFor, hasAll, hasAny, FORBIDDEN_MESSAGE } = require('../../helper/authorization.helper');
@@ -91,6 +92,39 @@ class AdminEscrowController {
       const row = await deliveryRateService.update({ ...value, adminId: request.auth._id, req: request });
       return responseConstants.success(response, 'Delivery rates updated', row, statusCodes.OK);
     } catch (error) { nextFunction(error); }
+  };
+
+  // Delivery vehicle catalogue (vehicle_types) — used for the system's
+  // vehicle recommendation and the buyer/seller vehicle choice.
+  listVehicleTypes = async (request, response, nextFunction) => {
+    try {
+      const rows = await vehicleTypeService.list();
+      return responseConstants.success(response, 'Vehicle types fetched', rows, statusCodes.OK);
+    } catch (error) { nextFunction(error); }
+  };
+
+  createVehicleType = async (request, response, nextFunction) => {
+    try {
+      const { error, value } = validation.ValidateVehicleType(request.body, { create: true });
+      if (responseConstants.validatIonError(response, error)) return;
+      const row = await vehicleTypeService.create({ body: value, adminId: request.auth._id, req: request });
+      return responseConstants.success(response, 'Vehicle type added', row, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof vehicleTypeService.VehicleTypeError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      nextFunction(error);
+    }
+  };
+
+  updateVehicleType = async (request, response, nextFunction) => {
+    try {
+      const { error, value } = validation.ValidateVehicleType(request.body, { create: false });
+      if (responseConstants.validatIonError(response, error)) return;
+      const row = await vehicleTypeService.update({ id: request.params.id, body: value, adminId: request.auth._id, req: request });
+      return responseConstants.success(response, 'Vehicle type updated', row, statusCodes.OK);
+    } catch (error) {
+      if (error instanceof vehicleTypeService.VehicleTypeError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
+      nextFunction(error);
+    }
   };
 }
 

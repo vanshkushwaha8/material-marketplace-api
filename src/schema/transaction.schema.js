@@ -2,6 +2,34 @@ const mongoose = require('mongoose');
 const { TRANSACTION_STATES, SETTLEMENT_STATES, COMMISSION_STATES } = require('../constants/transaction.constants');
 const deleteConstants = require('../constants/delete.constants');
 const { ESCROW_STATES, ESCROW_PENDING_OPERATIONS, ESCROW_ACTORS } = require('../constants/escrow.constants');
+const { DELIVERY_QUOTE_STATES } = require('../constants/delivery.constants');
+
+// A vehicle class as it was when the order referenced it (vehicle_types
+// can be edited later — see vehicleType.service#snapshot).
+const vehicleSnapshotSchema = new mongoose.Schema(
+  {
+    code: { type: String, required: true },
+    name: { type: String, required: true },
+    maxPayloadKg: { type: Number, default: null },
+  },
+  { _id: false }
+);
+
+// One row per delivery-quote transition (deliveryQuote.service#transition).
+const deliveryEventSchema = new mongoose.Schema(
+  {
+    action: { type: String, required: true },
+    from: { type: String, default: null },
+    to: { type: String, required: true },
+    by: { type: String, enum: ['buyer', 'seller', 'system'], required: true },
+    version: { type: Number, default: 0 },
+    vehicle: { type: vehicleSnapshotSchema, default: null },
+    charge: { type: Number, default: null },
+    note: { type: String, trim: true, default: '' },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
 // One row per escrow transition — the financial audit trail shown to the
 // buyer, seller and admin. Written ONLY by escrow.service.js#transition.
@@ -151,6 +179,29 @@ const transactionSchema = new mongoose.Schema(
       updatedAt: { type: Date, default: null },
     },
 
+    // Seller-quoted delivery (delivery.constants.js). Where/what is in
+    // `fulfilment` (address, distanceKm, weightKg); this is the agreement
+    // about HOW and FOR HOW MUCH. `charge` is the seller's proposal —
+    // top-level deliveryCharge/totalPayable change only when the buyer
+    // accepts quote `version`.
+    delivery: {
+      status: { type: String, enum: Object.values(DELIVERY_QUOTE_STATES), default: DELIVERY_QUOTE_STATES.NOT_REQUIRED },
+      version: { type: Number, default: 0 },
+      recommendedVehicle: { type: vehicleSnapshotSchema, default: null },
+      multipleTrips: { type: Boolean, default: false },
+      buyerRequestedVehicle: { type: vehicleSnapshotSchema, default: null },
+      sellerApprovedVehicle: { type: vehicleSnapshotSchema, default: null },
+      vehicleChangeReason: { type: String, trim: true, maxlength: 500, default: '' },
+      sellerNote: { type: String, trim: true, maxlength: 500, default: '' },
+      charge: { type: Number, min: 0, default: null },
+      buyerRejectReason: { type: String, trim: true, maxlength: 500, default: '' },
+      sellerDeclineReason: { type: String, trim: true, maxlength: 500, default: '' },
+      requestedAt: { type: Date, default: null },
+      quotedAt: { type: Date, default: null },
+      respondedAt: { type: Date, default: null },
+      history: { type: [deliveryEventSchema], default: [] },
+    },
+
     is_deleted: { type: String, enum: [deleteConstants.NOT_DELETED, deleteConstants.DELETED], default: deleteConstants.NOT_DELETED, index: true },
   },
   // Same reasoning as offer.schema.js — e.g. a dispute raised while the
@@ -161,5 +212,7 @@ const transactionSchema = new mongoose.Schema(
 transactionSchema.index({ status: 1, reservationExpiresAt: 1 });
 // Admin "needs attention" queue and escrow dashboards.
 transactionSchema.index({ escrowStatus: 1, updatedAt: -1 });
+// Seller's "needs a delivery quote" queue.
+transactionSchema.index({ seller: 1, 'delivery.status': 1, updatedAt: -1 });
 
 module.exports = transactionSchema;

@@ -16,6 +16,11 @@ const escrow = require('./escrow.service');
 const commissionService = require('./commission.service');
 const userModel = require('../../model/user.model');
 const { ESCROW_STATES, ESCROW_ACTORS, ESCROW_LABELS } = require('../../constants/escrow.constants');
+const deliveryQuoteService = require('./deliveryQuote.service');
+const deliveryRequirementService = require('./deliveryRequirement.service');
+const vehicleTypeService = require('./vehicleType.service');
+const { haversineKm } = require('./deliveryRate.service');
+const { DELIVERY_QUOTE_STATES } = require('../../constants/delivery.constants');
 class TransactionError extends Error {
     constructor(message, statusCode = 400) {
         super(message);
@@ -359,7 +364,7 @@ async function raiseDispute({ transactionId, userId, reason, req }) {
 }
 
 async function getOne({ transactionId, userId }) {
-    const { txn } = await getOwned(transactionId, userId);
+    const { txn, role } = await getOwned(transactionId, userId);
     await escrow.loadWithEscrow(txn._id); // backfills legacy rows once
     const fresh = await transactionModel.findById(txn._id);
     await fresh.populate('listing', 'title images unit');
@@ -367,14 +372,10 @@ async function getOne({ transactionId, userId }) {
     await fresh.populate('seller', 'fullName sellerType');
     const payout = await require('../../model/payout.model').findOne({ transaction: fresh._id }).select('status netPayoutAmount processedAt failureReason').lean();
     const view = toPartyView(fresh.toObject(), payout);
+    // Seller-quoted delivery: status, vehicles, quote and what this party can do.
+    view.delivery = deliveryQuoteService.view(fresh.toObject(), role);
     const store = await loadStoreSummary(fresh.seller);
-    if (store) {
-        // Lets checkout disable delivery up front instead of failing after
-        // the buyer picks an address.
-        const listing = await materialListingModel.findById(fresh.listing?._id || fresh.listing).select('location.geo').lean();
-        store.canPriceDelivery = Boolean(await sellerOriginPoint(fresh.seller._id, listing));
-        view.store = store;
-    }
+    if (store) view.store = store;
     return view;
 }
 
@@ -408,32 +409,19 @@ async function loadPayableForBuyer(transactionId, userId) {
     return txn;
 }
 
-// Delivery price for this order to one of the buyer's saved addresses:
-// distance from the store's pinned point (falls back to the listing's own
-// point for individual sellers) + total weight (listing.weightPerUnitKg ×
-// quantity), priced by the admin rate card. Server-side only.
-async function priceDelivery(txn, buyerId, addressId) {
-    const deliveryRateService = require('./deliveryRate.service');
+// The buyer's saved address, its map point (optional) and how far it is
+// from where the seller dispatches. Distance is straight-line and only
+// informs the seller's quote — it never prices anything by itself.
+async function loadDeliveryAddress(txn, buyerId, addressId) {
     if (!mongoose.Types.ObjectId.isValid(addressId)) throw new TransactionError('Choose a delivery address', 400);
     const deliveryLocationModel = require('../../model/deliveryLocation.model');
     const address = await deliveryLocationModel.findOne({ _id: addressId, buyer: buyerId, is_deleted: deleteConstants.NOT_DELETED }).lean();
     if (!address) throw new TransactionError('Delivery address not found', 404);
-
-    const listing = await materialListingModel.findById(txn.listing).select('weightPerUnitKg location.geo').lean();
+    const listing = await materialListingModel.findById(txn.listing).select('location.geo').lean();
     const from = await sellerOriginPoint(txn.seller, listing);
     const to = address.latitude != null && address.longitude != null ? [address.longitude, address.latitude] : null;
-    const weightKg = (Number(listing?.weightPerUnitKg) || 0) * Number(txn.agreedQuantity || 0);
-    try {
-        const q = await deliveryRateService.quote({ from, to, weightKg });
-        return { quote: q, address, weightKnown: listing?.weightPerUnitKg != null };
-    } catch (err) {
-        if (err instanceof deliveryRateService.DeliveryRateError) {
-            const e = new TransactionError(err.message, err.statusCode);
-            e.code = err.code;
-            throw e;
-        }
-        throw err;
-    }
+    const distanceKm = from && to ? Math.round(haversineKm(from, to) * 10) / 10 : null;
+    return { address, distanceKm };
 }
 
 // Where delivery starts: the store's pinned point, else the listing's own
@@ -449,26 +437,58 @@ async function sellerOriginPoint(sellerId, listing) {
     return valid(user?.location?.geo?.coordinates);
 }
 
-const totalsWith = (txn, deliveryCharge) => fromPaise(toPaise(txn.agreedAmount) + toPaise(txn.buyerFeeAmount || 0) + toPaise(deliveryCharge || 0));
-
-// Checkout preview: what delivery to `addressId` would cost and the new
-// total. Saves nothing — setFulfilment re-prices when the buyer commits.
-async function deliveryQuote({ transactionId, userId, addressId }) {
+// Checkout preview: the order's weight, the vehicle the platform suggests,
+// the vehicles the buyer can ask for, and (with addressId) the distance.
+// Saves nothing.
+async function deliveryRequirement({ transactionId, userId, addressId }) {
     const txn = await loadPayableForBuyer(transactionId, userId);
-    const { quote, weightKnown } = await priceDelivery(txn, userId, addressId);
+    const requirement = await deliveryRequirementService.forTransaction(txn);
+    const distanceKm = addressId ? (await loadDeliveryAddress(txn, userId, addressId)).distanceKm : null;
     return {
-        ...quote,
-        weightKnown,
-        productAmount: txn.agreedAmount,
-        convenienceFee: txn.buyerFeeAmount || 0,
-        totalPayable: totalsWith(txn, quote.charge),
+        totalWeightKg: requirement.totalWeightKg,
+        weightKnown: requirement.weightKnown,
+        recommendedVehicle: requirement.recommendedVehicle,
+        multipleTrips: requirement.multipleTrips,
+        vehicles: requirement.vehicles.map((v) => ({ code: v.code, name: v.name, maxPayloadKg: v.maxPayloadKg ?? null, description: v.description || '' })),
+        distanceKm,
     };
 }
 
-// Buyer picks delivery / store pickup (and the address + contact for it)
-// on the checkout page. Only while the order is still unpaid — after that
-// the seller is already acting on what was chosen. Delivery is priced here
-// (never from a client-sent amount) and folded into totalPayable.
+// Payment orders opened for this order that no longer match what it costs
+// (or, when delivery is now awaiting a quote, any open one). A payment the
+// buyer may be completing right now → refuse; older never-started orders
+// are cancelled so nothing can be captured at a stale amount (a capture on
+// a cancelled order is flagged for reconciliation by payment.service).
+async function closeStalePaymentOrders(txn, keepTotal) {
+    const paymentModel = require('../../model/payment.model');
+    const { PAYMENT_STATES } = require('../../constants/payment.constants');
+    const open = await paymentModel.find({
+        transaction: txn._id, status: { $in: [PAYMENT_STATES.CREATED, PAYMENT_STATES.PENDING, PAYMENT_STATES.PROCESSING] }, is_deleted: deleteConstants.NOT_DELETED,
+    }).select('status amountPaise createdAt').lean();
+    const stale = open.filter((p) => keepTotal == null || p.amountPaise !== toPaise(keepTotal));
+    if (stale.some((p) => p.status !== PAYMENT_STATES.CREATED || Date.now() - new Date(p.createdAt).getTime() < ACTIVE_PAYMENT_GRACE_MS)) {
+        throw new TransactionError('A payment for this order is in progress — finish it, or try again in a few minutes', 409);
+    }
+    if (stale.length) {
+        await paymentModel.updateMany(
+            { _id: { $in: stale.map((p) => p._id) }, status: PAYMENT_STATES.CREATED },
+            { $set: { status: PAYMENT_STATES.CANCELLED, failureReason: 'Order delivery details changed at checkout' }, $push: { history: { action: 'CANCELLED_TOTAL_CHANGED' } } }
+        );
+    }
+}
+
+const toTxnError = (err) => {
+    if (!(err instanceof deliveryQuoteService.DeliveryQuoteError)) return err;
+    const e = new TransactionError(err.message, err.statusCode);
+    e.code = err.code;
+    return e;
+};
+
+// Buyer picks delivery or pickup (and the address + contact for it) on the
+// checkout page, only while the order is unpaid and delivery isn't agreed
+// yet. PICKUP is payable at once. DELIVERY asks the seller for a quote
+// (deliveryQuote.service) — nothing is charged for it until the buyer
+// accepts that quote.
 async function setFulfilment({ transactionId, userId, body, req }) {
     const txn = await loadPayableForBuyer(transactionId, userId);
     const seller = await userModel.findById(txn.seller).select('sellerType').lean();
@@ -479,57 +499,76 @@ async function setFulfilment({ transactionId, userId, body, req }) {
         if (body.method === 'DELIVERY' && !store.deliveryAvailable) throw new TransactionError('This store does not deliver — choose store pickup', 400);
         if (body.method === 'PICKUP' && !store.pickupAvailable) throw new TransactionError('This store does not offer pickup — choose delivery', 400);
     }
+    const contact = { contactName: body.contactName, contactPhone: body.contactPhone, note: body.note || '' };
+    const now = new Date();
 
-    let delivery = null;
-    if (body.method === 'DELIVERY') delivery = await priceDelivery(txn, userId, body.addressId);
-    const deliveryCharge = delivery ? delivery.quote.charge : 0; // store pickup is free
-    const newTotal = totalsWith(txn, deliveryCharge);
+    try {
+        if (body.method === 'PICKUP') {
+            await closeStalePaymentOrders(txn, deliveryQuoteService.totalWith(txn, 0));
+            const fulfilment = { method: 'PICKUP', addressLabel: '', address: '', ...contact, updatedAt: now };
+            const updated = await deliveryQuoteService.switchToPickup({ transactionId: txn._id, buyerId: userId, fulfilment, req });
+            return fulfilmentResult(updated);
+        }
 
-    // The amount is changing under any open payment order for this order.
-    // A payment the buyer may be completing right now → refuse; older,
-    // never-started orders are cancelled so a fresh one is made at the new
-    // total (payment.service also refuses to apply a capture whose amount
-    // doesn't match the order).
-    const paymentModel = require('../../model/payment.model');
-    const { PAYMENT_STATES } = require('../../constants/payment.constants');
-    const open = await paymentModel.find({
-        transaction: txn._id, status: { $in: [PAYMENT_STATES.CREATED, PAYMENT_STATES.PENDING, PAYMENT_STATES.PROCESSING] }, is_deleted: deleteConstants.NOT_DELETED,
-    }).select('status amountPaise createdAt').lean();
-    const stale = open.filter((p) => p.amountPaise !== toPaise(newTotal));
-    if (stale.some((p) => p.status !== PAYMENT_STATES.CREATED || Date.now() - new Date(p.createdAt).getTime() < ACTIVE_PAYMENT_GRACE_MS)) {
-        throw new TransactionError('A payment for this order is in progress — finish it, or try again in a few minutes', 409);
+        const [{ address, distanceKm }, requirement] = await Promise.all([
+            loadDeliveryAddress(txn, userId, body.addressId),
+            deliveryRequirementService.forTransaction(txn),
+        ]);
+        let requestedVehicle = null;
+        if (body.vehicleCode) {
+            const v = requirement.vehicles.find((x) => x.code === String(body.vehicleCode).toUpperCase());
+            if (!v) throw new TransactionError('Choose a vehicle from the list', 400);
+            requestedVehicle = vehicleTypeService.snapshot(v);
+        }
+        // Delivery isn't payable until quoted + accepted: no open payment
+        // order may survive this change.
+        await closeStalePaymentOrders(txn, null);
+        const fulfilment = {
+            method: 'DELIVERY',
+            addressLabel: address.label,
+            address: address.address,
+            ...contact,
+            deliveryLocation: address._id,
+            latitude: address.latitude ?? null,
+            longitude: address.longitude ?? null,
+            distanceKm,
+            weightKg: requirement.totalWeightKg,
+            rateSetting: null,
+            updatedAt: now,
+        };
+        const updated = await deliveryQuoteService.request({ transactionId: txn._id, buyerId: userId, fulfilment, requirement, requestedVehicle, req });
+        return fulfilmentResult(updated);
+    } catch (err) {
+        throw toTxnError(err);
     }
-    if (stale.length) {
-        await paymentModel.updateMany(
-            { _id: { $in: stale.map((p) => p._id) }, status: PAYMENT_STATES.CREATED },
-            { $set: { status: PAYMENT_STATES.CANCELLED, failureReason: 'Order total changed at checkout' }, $push: { history: { action: 'CANCELLED_TOTAL_CHANGED' } } }
-        );
-    }
+}
 
-    txn.fulfilment = {
-        method: body.method,
-        addressLabel: delivery ? delivery.address.label : '',
-        address: delivery ? delivery.address.address : '',
-        contactName: body.contactName,
-        contactPhone: body.contactPhone,
-        note: body.note || '',
-        deliveryLocation: delivery ? delivery.address._id : null,
-        latitude: delivery ? delivery.address.latitude : null,
-        longitude: delivery ? delivery.address.longitude : null,
-        distanceKm: delivery ? delivery.quote.distanceKm : null,
-        weightKg: delivery ? delivery.quote.weightKg : null,
-        rateSetting: delivery ? delivery.quote.rateSettingId : null,
-        updatedAt: new Date(),
+function fulfilmentResult(txn) {
+    return {
+        fulfilment: txn.fulfilment,
+        deliveryCharge: txn.deliveryCharge || 0,
+        totalPayable: txn.totalPayable,
+        buyerFeeAmount: txn.buyerFeeAmount || 0,
+        delivery: deliveryQuoteService.view(txn, 'buyer'),
     };
-    txn.deliveryCharge = deliveryCharge;
-    txn.totalPayable = newTotal;
-    txn.history.push({
-        action: 'FULFILMENT_SET', by: 'buyer',
-        note: delivery ? `Delivery chosen — ${delivery.quote.distanceKm} km, ₹${deliveryCharge}` : 'Store pickup chosen',
-    });
-    await txn.save();
-    await createAuditLog({ req, userId, action: auditLogConstants.TRANSACTION_FULFILMENT_SET, entity: 'transactions', entityId: txn._id, metadata: { fulfilment: body.method, deliveryCharge } });
-    return { fulfilment: txn.fulfilment, deliveryCharge, totalPayable: newTotal, buyerFeeAmount: txn.buyerFeeAmount || 0 };
+}
+
+// Buyer accepts / rejects the seller's quote; seller quotes / declines.
+// The route's permission picks the side; the service re-checks ownership.
+async function respondToDeliveryQuote({ transactionId, userId, body, req }) {
+    try {
+        let txn;
+        switch (body.action) {
+            case 'ACCEPT': txn = await deliveryQuoteService.accept({ transactionId, buyerId: userId, version: body.version, req }); break;
+            case 'REJECT': txn = await deliveryQuoteService.reject({ transactionId, buyerId: userId, version: body.version, reason: body.reason || '', req }); break;
+            case 'QUOTE': txn = await deliveryQuoteService.quote({ transactionId, sellerId: userId, vehicleCode: body.vehicleCode, charge: body.charge, vehicleChangeReason: body.vehicleChangeReason, sellerNote: body.sellerNote, req }); break;
+            case 'DECLINE': txn = await deliveryQuoteService.decline({ transactionId, sellerId: userId, reason: body.reason, req }); break;
+            default: throw new TransactionError('Unknown delivery action', 400);
+        }
+        return getOne({ transactionId: txn._id, userId });
+    } catch (err) {
+        throw toTxnError(err);
+    }
 }
 
 // Buyer/seller view of a transaction: the escrow state and its timeline,
@@ -557,10 +596,15 @@ function toPartyView(txn, payout) {
     };
 }
 
-async function myTransactions({ userId, role, status, page = 1, limit = 20 }) {
+async function myTransactions({ userId, role, status, deliveryStatus, page = 1, limit = 20 }) {
     const query = { is_deleted: deleteConstants.NOT_DELETED };
     query[role === 'seller' ? 'seller' : 'buyer'] = userId;
     if (status) query.status = status;
+    // e.g. the seller's "needs a delivery quote" queue.
+    if (deliveryStatus && Object.values(DELIVERY_QUOTE_STATES).includes(deliveryStatus)) {
+        query['delivery.status'] = deliveryStatus;
+        query.status = TRANSACTION_STATES.PAYMENT_PENDING;
+    }
     const pageNum = Math.max(1, Number(page) || 1);
     const pageLimit = Math.min(100, Number(limit) || 20);
     // Buyer's own list needs the seller's name (Active Purchases/Transactions
@@ -573,7 +617,10 @@ async function myTransactions({ userId, role, status, page = 1, limit = 20 }) {
         transactionModel.countDocuments(query),
     ]);
     // Same party view as getOne: escrow status/label, no admin ids or ledger internals.
-    const rows = getData.map((t) => toPartyView(t.escrowStatus ? t : { ...t, escrowStatus: escrow.deriveLegacyEscrowStatus(t, null) }, null));
+    const rows = getData.map((t) => ({
+        ...toPartyView(t.escrowStatus ? t : { ...t, escrowStatus: escrow.deriveLegacyEscrowStatus(t, null) }, null),
+        delivery: deliveryQuoteService.view(t, role),
+    }));
     return { getData: rows, count, page: pageNum, limit: pageLimit };
 }
 
@@ -592,6 +639,8 @@ async function expireStaleReservations() {
         const txn = await releaseUnpaidReservation(_id, { action: 'RESERVATION_EXPIRED', by: 'system' });
         if (!txn) continue; // paid/cancelled between the find and now
         released += 1;
+        // Seller never quoted / buyer never accepted: say so to both sides.
+        await deliveryQuoteService.markExpired(txn).catch(() => { });
         await createAuditLog({ userId: txn.buyer, action: auditLogConstants.RESERVATION_EXPIRED, entity: 'transactions', entityId: txn._id });
         await createAuditLog({ userId: txn.buyer, action: auditLogConstants.INVENTORY_RELEASED, entity: 'material_listings', entityId: txn.listing, metadata: { transactionId: txn._id, quantity: txn.agreedQuantity } });
     }
@@ -601,5 +650,6 @@ async function expireStaleReservations() {
 module.exports = {
     TransactionError, calculateCommission, markPaymentConfirmed, markHandover,
     confirmReceipt, settleConfirmedTransaction, toPartyView,
-    cancelTransaction, resolveDispute, raiseDispute, getOne, myTransactions, expireStaleReservations, setFulfilment, deliveryQuote,
+    cancelTransaction, resolveDispute, raiseDispute, getOne, myTransactions, expireStaleReservations, setFulfilment,
+    deliveryRequirement, respondToDeliveryQuote,
 };
