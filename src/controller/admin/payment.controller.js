@@ -9,6 +9,7 @@ class AdminPaymentController {
       const result = await adminPaymentService.list(request.query);
       return responseConstants.success(response, 'Payment history fetched', result, statusCodes.OK);
     } catch (error) {
+      if (error instanceof adminPaymentService.PaymentHistoryError) return responseConstants.BadRequest(response, error.message, null, error.statusCode);
       nextFunction(error);
     }
   };
