@@ -9,6 +9,7 @@ const { PAYMENT_STATES } = require('../../constants/payment.constants');
 const { TRANSACTION_STATES, COMMISSION_STATES } = require('../../constants/transaction.constants');
 const { PAYOUT_STATES } = require('../../constants/payout.constants');
 const { toPaise, payableAmount } = require('../../helper/money.helper');
+const { orderRef } = require('../../helper/orderRef.helper');
 const configenv = require('../../config/env.config');
 const { getPaymentAdapter, getManualTestPaymentAdapter } = require('../../config/integrations.config');
 const transactionService = require('./transaction.service');
@@ -346,17 +347,24 @@ async function confirmPaymentSuccess({ payment, providerPaymentId, method, req }
     return flagForReconciliation(fresh._id, `Captured while transaction was ${txn?.status || 'missing'} — refund or reconcile`, req);
   }
   const paidAmount = `₹${(fresh.amountPaise / 100).toLocaleString('en-IN')}`;
+  const ref = orderRef(fresh.transaction);
+  const item = typeof txn?.populate === 'function' ? (await txn.populate('listing', 'title unit').catch(() => null))?.listing : null;
+  const what = `${txn?.agreedQuantity ?? ''} ${item?.unit || ''} of ${item?.title || 'material'}`.replace(/\s+/g, ' ').trim();
   await notificationService.createNotification({
     recipientId: fresh.buyer, type: NOTIFICATION_TYPES.PAYMENT_SUCCESS,
-    title: 'Payment successful — held securely', message: `Your payment of ${paidAmount} is held by BUILD MATERIAL and is only released to the seller after you confirm receipt`,
-    entityType: 'transaction', entityId: fresh.transaction,
+    title: `Order ${ref} placed`,
+    message: `Your order ${ref} (${what}) has been placed successfully. Your payment of ${paidAmount} is held by BUILD MATERIAL and is only released to the seller after you confirm receipt.`,
+    entityType: 'transaction', entityId: fresh.transaction, entityName: item?.title || null,
+    dedupeKey: `PAYMENT_SUCCESS:${fresh.transaction}`,
   });
   // Actor is the buyer here — they're the one who just paid; the seller is
   // the receiver being told about it.
   await notificationService.createNotification({
     recipientId: fresh.seller, actorId: fresh.buyer, type: NOTIFICATION_TYPES.PAYMENT_RECEIVED,
-    title: 'Payment received and held', message: (actorName) => `${actorName || 'The buyer'} paid ${paidAmount}. It is held until you deliver and the buyer confirms receipt — please proceed with handover`,
-    entityType: 'transaction', entityId: fresh.transaction,
+    title: `New order ${ref}`,
+    message: `You have received a new order ${ref} (${what}). Please review the order details and hand over the material — the buyer's payment is held until they confirm receipt.`,
+    entityType: 'transaction', entityId: fresh.transaction, entityName: item?.title || null,
+    dedupeKey: `PAYMENT_RECEIVED:${fresh.transaction}`,
   });
   await createAuditLog({ req, userId: fresh.buyer, action: auditLogConstants.PAYMENT_CONFIRMED, entity: 'payments', entityId: fresh._id });
   return fresh;
@@ -420,20 +428,21 @@ async function handleWebhook({ rawBody, signature, payload }) {
       await escrowSafe({ transactionId: failedFor.transaction, action: 'PAYMENT_FAILED', actor: { type: ESCROW_ACTORS.PROVIDER }, reason: entity.error_description || 'Payment failed at provider', providerRef: entity.id || '' });
     }
 
- const failedPayment = await paymentModel.findOne({
-    providerOrderId: entity.order_id
-  });
-
-  if (failedPayment) {
-    await notificationService.createNotification({
-      recipientId: failedPayment.buyer,
-      type: NOTIFICATION_TYPES.PAYMENT_FAILED,
-      title: 'Payment failed',
-      message: entity.error_description || 'Your payment could not be completed',
-      entityType: 'transaction',
-      entityId: failedPayment.transaction,
-    });
-  }
+    // Only when the payment really is FAILED now: a late failure event for
+    // an earlier attempt on an order that has since been paid must not tell
+    // the buyer their payment failed.
+    if (failedFor && failedFor.status === PAYMENT_STATES.FAILED) {
+      const failedPayment = await paymentModel.findOne({ providerOrderId: entity.order_id }).select('buyer transaction').lean();
+      await notificationService.createNotification({
+        recipientId: failedPayment.buyer,
+        type: NOTIFICATION_TYPES.PAYMENT_FAILED,
+        title: `Payment failed — order ${orderRef(failedPayment.transaction)}`,
+        message: `${entity.error_description || 'Your payment could not be completed'}. No money was taken for this attempt — you can try again from the order page.`,
+        entityType: 'transaction',
+        entityId: failedPayment.transaction,
+        dedupeKey: `PAYMENT_FAILED:${entity.id || eventId}`,
+      });
+    }
   } else if (eventType === 'refund.processed') {
     await handleRefundProcessed(entity);
   } else if (eventType === 'refund.failed') {

@@ -61,17 +61,44 @@ class transactionValidation {
     });
   }
 
+  // Seller's handover declaration. Order-dependent rules (time not before
+  // payment, quantity ≤ ordered) are checked in transaction.service.
   static handover() {
     return Joi.object({
+      handedOverAt: Joi.date().iso().required()
+        .messages({ 'any.required': 'Enter the handover date and time', 'date.base': 'Enter a valid handover date and time', 'date.format': 'Enter a valid handover date and time' }),
+      quantity: Joi.number().positive().max(10000000).required()
+        .messages({ 'any.required': 'Enter the quantity handed over', 'number.positive': 'Quantity must be more than 0' }),
+      packageCount: Joi.number().integer().min(1).max(100000).allow(null),
+      transporterName: Joi.string().trim().max(120).allow(''),
+      vehicleNumber: Joi.string().trim().uppercase().max(20).pattern(/^[A-Z0-9\s-]*$/).allow('')
+        .messages({ 'string.pattern.base': 'Vehicle number can contain only letters, digits, spaces and hyphens' }),
+      challanNumber: Joi.string().trim().max(60).allow(''),
       note: Joi.string().trim().max(1000).allow(''),
-      // Uploaded beforehand via the existing generic upload endpoint —
-      // this only records the resulting references, never a file body.
-      evidence: Joi.array().items(Joi.object({
-        url: Joi.string().uri().required(),
-        storageKey: Joi.string().required(),
-        mimeType: Joi.string().allow(''),
-      })).max(12),
+      // Temp-upload filenames (apiUrls.singleImageUpload) — the server moves
+      // them into private storage. Never a client-supplied URL.
+      evidenceFiles: Joi.array().items(
+        // Shape produced by image.service#uniqueName (images become .webp);
+        // no path separators, so it can't point outside the temp folder.
+        Joi.string().max(220).pattern(/^\d{10,13}_[a-f0-9]{8}___[^/\\\0]{0,180}\.(webp|pdf)$/)
+          .messages({ 'string.pattern.base': 'Invalid evidence file' })
+      ).max(6).unique(),
     });
+  }
+
+  // Buyer's explicit receipt confirmation: acknowledgement + every check.
+  static confirmReceipt() {
+    const tick = Joi.boolean().valid(true).required();
+    return Joi.object({
+      acknowledged: tick.messages({ 'any.only': 'Confirm that you have inspected and received the material', 'any.required': 'Confirm that you have inspected and received the material' }),
+      checklist: Joi.object({
+        materialMatches: tick, quantityMatches: tick, noVisibleDamage: tick, documentsChecked: tick,
+      }).required().messages({ 'any.only': 'Tick every check before confirming — or report an issue instead', 'any.required': 'Tick every check before confirming — or report an issue instead' }),
+    });
+  }
+
+  static ValidateConfirmReceipt(data) {
+    return this.confirmReceipt().validate(data, { abortEarly: true, stripUnknown: true });
   }
 
   static ValidateDispute(data) {

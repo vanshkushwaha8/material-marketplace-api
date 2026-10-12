@@ -70,6 +70,12 @@ const configEnv = {
   // ── Marketplace rules ──
   // Default commission until an admin sets a rate per seller type.
   MARKETPLACE_COMMISSION_PCT: process.env.MARKETPLACE_COMMISSION_PCT || '8.9',
+  // GST on the platform commission, snapshotted per order at capture so
+  // analytics can split it out. Empty = not recorded (analytics shows the
+  // tax component as unavailable rather than guessing). INCLUSIVE=true means
+  // the commission % already contains the GST (e.g. 8.9% incl. 18% GST).
+  COMMISSION_GST_PCT: process.env.COMMISSION_GST_PCT || '',
+  COMMISSION_GST_INCLUSIVE: (process.env.COMMISSION_GST_INCLUSIVE || 'true').toLowerCase() !== 'false',
   // Buyer-side convenience fee, % of the final product price, added on top
   // at payment (platform revenue — never part of the seller's settlement).
   BUYER_FEE_PCT_STORE: process.env.BUYER_FEE_PCT_STORE || '2',

@@ -35,4 +35,13 @@ function buyerFeeFor(agreedAmount, pct) {
   return { buyerFeeAmount: fromPaise(feePaise), totalPayable: fromPaise(toPaise(agreedAmount) + feePaise) };
 }
 
-module.exports = { toPaise, fromPaise, calculateCommissionPaise, unitPriceFromAmount, payableAmount, buyerFeeFor };
+// GST portion of a commission amount. Inclusive: commission already
+// contains the tax (tax = c × r / (100 + r)). Exclusive: tax is charged on
+// top of the commission (tax = c × r / 100). null when no rate configured.
+function commissionTaxPaise(commissionPaise, taxPct, inclusive = true) {
+  const r = Number(taxPct);
+  if (taxPct === '' || taxPct == null || !Number.isFinite(r) || r < 0) return null;
+  return Math.round(inclusive ? (commissionPaise * r) / (100 + r) : (commissionPaise * r) / 100);
+}
+
+module.exports = { toPaise, fromPaise, calculateCommissionPaise, unitPriceFromAmount, payableAmount, buyerFeeFor, commissionTaxPaise };

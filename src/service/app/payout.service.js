@@ -8,6 +8,7 @@ const userModel = require('../../model/user.model');
 const { notifyAdmins } = require('../admin/adminNotification.service');
 const { TRANSACTION_STATES, SETTLEMENT_STATES, COMMISSION_STATES } = require('../../constants/transaction.constants');
 const { toPaise, fromPaise } = require('../../helper/money.helper');
+const { orderRef } = require('../../helper/orderRef.helper');
 const { getPayoutAdapter } = require('../../config/integrations.config');
 const configenv = require('../../config/env.config');
 const { createAuditLog } = require('../../helper/audit.helper');
@@ -158,10 +159,22 @@ async function markPayoutFailed({ payoutId, reason, notConfigured = false, req }
     entityType: 'transaction', entityId: payout.transaction, userId: payout.seller,
     dedupeKey: `RELEASE_FAILED:${payout._id}:${payout.attempts}`,
   });
+  const ref = orderRef(payout.transaction);
   await notificationService.createNotification({
     recipientId: payout.seller, type: NOTIFICATION_TYPES.PAYOUT_FAILED,
-    title: 'Payout delayed', message: 'Your payout could not be sent yet. Our team has been alerted and will retry it.', entityType: 'payout', entityId: payout._id,
+    title: `Settlement delayed — order ${ref}`,
+    message: `Settlement for order ${ref} has failed at the bank/payment provider. Amount: ₹${Number(payout.netPayoutAmount).toLocaleString('en-IN')}. Our team has been alerted and will retry it.`,
+    entityType: 'payout', entityId: payout._id, dedupeKey: `PAYOUT_FAILED:seller:${payout._id}:${payout.attempts}`,
   });
+  const txn = await transactionModel.findById(payout.transaction).select('buyer').lean();
+  if (txn) {
+    await notificationService.createNotification({
+      recipientId: txn.buyer, type: NOTIFICATION_TYPES.SETTLEMENT_UPDATE,
+      title: `Order ${ref} — settlement delayed`,
+      message: `Your order ${ref} is confirmed. Seller payment settlement is delayed and our team is retrying it — no action is needed from you.`,
+      entityType: 'transaction', entityId: payout.transaction, dedupeKey: `PAYOUT_FAILED:buyer:${payout._id}`,
+    });
+  }
   return payout;
 }
 
@@ -190,15 +203,20 @@ async function markPayoutPaid({ payoutId, providerPayoutId, manual = false, exte
     req,
   });
   await createAuditLog({ req, userId: payout.seller, action: auditLogConstants.PAYOUT_PAID, entity: 'payouts', entityId: payout._id, metadata: { manual, externalReference: externalReference || undefined } });
+  const ref = orderRef(payout.transaction);
   await notificationService.createNotification({
     recipientId: payout.seller, type: NOTIFICATION_TYPES.PAYOUT_PAID,
-    title: 'Payment released', message: `₹${payout.netPayoutAmount.toLocaleString('en-IN')} (after commission) has been sent to your bank account`, entityType: 'payout', entityId: payout._id,
+    title: `Settlement completed — order ${ref}`,
+    message: `Settlement for order ${ref} is completed. Amount: ₹${Number(payout.netPayoutAmount).toLocaleString('en-IN')} (after commission) has been sent to your bank account.`,
+    entityType: 'payout', entityId: payout._id, dedupeKey: `PAYOUT_PAID:seller:${payout._id}`,
   });
   const txn = await transactionModel.findById(payout.transaction).select('buyer').lean();
   if (txn) {
     await notificationService.createNotification({
       recipientId: txn.buyer, type: NOTIFICATION_TYPES.PAYMENT_RELEASED,
-      title: 'Order settled', message: 'Your payment has been released to the seller. This order is complete.', entityType: 'transaction', entityId: payout.transaction,
+      title: `Order ${ref} settled`,
+      message: `Your order ${ref} has been confirmed. Seller payment settlement is completed — this order is complete.`,
+      entityType: 'transaction', entityId: payout.transaction, dedupeKey: `PAYOUT_PAID:buyer:${payout._id}`,
     });
   }
   return payout;

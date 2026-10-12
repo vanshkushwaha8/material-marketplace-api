@@ -1,4 +1,4 @@
-const { toPaise, fromPaise, calculateCommissionPaise } = require('../helper/money.helper');
+const { toPaise, fromPaise, calculateCommissionPaise, commissionTaxPaise } = require('../helper/money.helper');
 
 describe('money.helper', () => {
   test('toPaise converts rupees to integer paise without floating-point drift', () => {
@@ -25,5 +25,15 @@ describe('money.helper', () => {
       const { commissionAmountPaise, sellerSettlementPaise } = calculateCommissionPaise(gross, pct);
       expect(commissionAmountPaise + sellerSettlementPaise).toBe(gross);
     }
+  });
+
+  test('commissionTaxPaise: GST inside an inclusive commission, or on top of an exclusive one; null when not configured', () => {
+    // ₹890 commission incl. 18% GST → ₹135.76 tax (890 × 18 / 118).
+    expect(commissionTaxPaise(89000, 18, true)).toBe(13576);
+    // Exclusive: 18% of ₹890 → ₹160.20.
+    expect(commissionTaxPaise(89000, 18, false)).toBe(16020);
+    expect(commissionTaxPaise(89000, '', true)).toBeNull();
+    expect(commissionTaxPaise(89000, null, true)).toBeNull();
+    expect(commissionTaxPaise(89000, 'abc', true)).toBeNull();
   });
 });

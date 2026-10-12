@@ -22,6 +22,11 @@ const notificationSchema = new mongoose.Schema(
     // material, etc.) — denormalized at creation time so the notification
     // is self-contained and doesn't need a populate() to render.
     entityName: { type: String, default: null, trim: true },
+    // One notification per business event: e.g. "HANDOVER_STARTED:<txnId>".
+    // A retried request, a duplicate webhook or a racing callback hits the
+    // unique index instead of creating a second copy. No default — the
+    // sparse index only covers notifications that set it.
+    dedupeKey: { type: String, trim: true },
     isRead: { type: Boolean, default: false, index: true },
     readAt: { type: Date, default: null },
   },
@@ -29,4 +34,5 @@ const notificationSchema = new mongoose.Schema(
 );
 
 notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
+notificationSchema.index({ dedupeKey: 1 }, { unique: true, sparse: true });
 module.exports = notificationSchema;

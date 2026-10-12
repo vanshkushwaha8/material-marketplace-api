@@ -117,6 +117,13 @@ const transactionSchema = new mongoose.Schema(
     // platformCommissionPct. Later admin changes never touch this.
     commissionSellerType: { type: String, default: null },
     commissionSetting: { type: mongoose.Schema.Types.ObjectId, ref: 'commission_settings', default: null },
+    // Tax (GST) portion of platformCommissionAmount, snapshotted with the
+    // commission — only when COMMISSION_GST_PCT is configured at capture
+    // time. null = not recorded (older orders / not configured); analytics
+    // reports those as "not recorded" instead of guessing.
+    commissionTaxPct: { type: Number, default: null },
+    commissionTaxAmount: { type: Number, default: null },
+    commissionTaxInclusive: { type: Boolean, default: null },
     commissionLockedAt: { type: Date, default: null },
     commissionDeductedAt: { type: Date, default: null },
     releaseRequestedAt: { type: Date, default: null },
@@ -141,6 +148,30 @@ const transactionSchema = new mongoose.Schema(
 
     handoverNote: { type: String, trim: true, default: '' },
     handoverEvidence: { type: [handoverMediaSchema], default: [] },
+    // What the seller declared when marking handover (transaction.service
+    // #markHandover). Recorded once, with the authenticated seller's id.
+    handoverDetails: {
+      handedOverAt: { type: Date, default: null },     // seller-declared time of handover
+      quantity: { type: Number, default: null },       // in the listing's unit
+      packageCount: { type: Number, default: null },
+      transporterName: { type: String, trim: true, maxlength: 120, default: '' },
+      vehicleNumber: { type: String, trim: true, maxlength: 20, default: '' },
+      challanNumber: { type: String, trim: true, maxlength: 60, default: '' },
+      declaredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'users', default: null },
+      recordedAt: { type: Date, default: null },
+    },
+    // The buyer's explicit acknowledgement that released the payment
+    // (transaction.service#confirmReceipt) — never set by viewing a page.
+    receiptConfirmation: {
+      checklist: {
+        materialMatches: { type: Boolean, default: false },
+        quantityMatches: { type: Boolean, default: false },
+        noVisibleDamage: { type: Boolean, default: false },
+        documentsChecked: { type: Boolean, default: false },
+      },
+      acknowledgedAt: { type: Date, default: null },
+      confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'users', default: null },
+    },
 
     history: [
       {
@@ -214,5 +245,7 @@ transactionSchema.index({ status: 1, reservationExpiresAt: 1 });
 transactionSchema.index({ escrowStatus: 1, updatedAt: -1 });
 // Seller's "needs a delivery quote" queue.
 transactionSchema.index({ seller: 1, 'delivery.status': 1, updatedAt: -1 });
+// Admin commission & revenue analytics: paid orders by date.
+transactionSchema.index({ paymentConfirmedAt: -1, commissionStatus: 1 });
 
 module.exports = transactionSchema;

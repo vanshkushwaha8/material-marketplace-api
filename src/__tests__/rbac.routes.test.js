@@ -71,7 +71,7 @@ const APP = {
   // orders & payments
   'POST /transactions/:id/cancel': B, 'PATCH /transactions/:id/fulfilment': B, 'GET /transactions/:id/delivery-requirement': B,
   'POST /transactions/:id/delivery-quote/accept': B, 'POST /transactions/:id/delivery-quote/reject': B,
-  'POST /transactions/:id/delivery-quote': S, 'POST /transactions/:id/delivery-quote/decline': S, 'GET /vehicle-types': BS, 'POST /transactions/:id/confirm-receipt': B, 'GET /buyer/transactions': B,
+  'POST /transactions/:id/delivery-quote': S, 'POST /transactions/:id/delivery-quote/decline': S, 'GET /vehicle-types': BS, 'POST /transactions/:id/confirm-receipt': B, 'GET /transactions/:id/handover-evidence/:key': BS, 'GET /safety-notice': BS, 'POST /safety-notice': BS, 'GET /buyer/transactions': B,
   'POST /transactions/:id/handover': S, 'GET /seller/transactions': S,
   'POST /transactions/:id/dispute': BS, 'GET /transactions/:id': BS,
   'POST /transactions/:id/payment-order': B, 'POST /payments/verify': B, 'POST /transactions/:id/manual-test-payment': B,
@@ -122,7 +122,7 @@ const ADMIN = {
   'GET /transactions/:id/payment': 'all(transaction:read)', 'GET /payments/attention': 'all(transaction:read)',
   'POST /transactions/:id/payment-actions': 'any(payment:release,payment:refund,payment:manual_resolve)',
   'GET /payment-history': 'all(payment:read)', 'POST /payments/:id/refund': 'all(payment:refund)',
-  'GET /commission-history': 'all(commission:read)', 'GET /commission-settings': 'all(commission:read)',
+  'GET /commission-history': 'all(commission:read)', 'GET /revenue-analytics': 'all(commission:read)', 'GET /revenue-analytics/orders': 'all(commission:read)', 'GET /revenue-analytics/export': 'all(commission:read)', 'GET /commission-settings': 'all(commission:read)',
   'PUT /commission-settings': 'all(commission:update)',
   'GET /delivery-rates': 'all(commission:read)', 'PUT /delivery-rates': 'all(commission:update)',
   'GET /vehicle-types': 'all(commission:read)', 'POST /vehicle-types': 'all(commission:update)', 'PATCH /vehicle-types/:id': 'all(commission:update)',

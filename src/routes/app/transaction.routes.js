@@ -20,6 +20,7 @@ router.post('/transactions/:id/delivery-quote/reject', authapiLimiter({ windowMs
 router.get('/vehicle-types', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.ORDER_READ), transactionController.vehicleTypes);
 router.patch('/transactions/:id/fulfilment', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.setFulfilment);
 router.post('/transactions/:id/handover', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_FULFIL), transactionController.markHandover);
+router.get('/transactions/:id/handover-evidence/:key', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.ORDER_READ), transactionController.handoverEvidence);
 router.post('/transactions/:id/confirm-receipt', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 60 }), ...signedIn, authorize(P.ORDER_PURCHASE), transactionController.confirmReceipt);
 router.post('/transactions/:id/dispute', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 30 }), ...signedIn, authorize(P.ORDER_DISPUTE), transactionController.raiseDispute);
 router.get('/transactions/:id', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), ...signedIn, authorize(P.ORDER_READ), transactionController.getOne);

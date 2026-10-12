@@ -139,7 +139,20 @@ const userSchema = new mongoose.Schema({
     
     
     fcmTokens: [{ type: String }],
-    
+
+    // Fraud-awareness notice shown after login (safetyNotice.service.js):
+    // one row per role+version the user acknowledged or dismissed.
+    safetyNoticeAcks: {
+        type: [{
+            _id: false,
+            role: { type: String, enum: ['buyer', 'seller'], required: true },
+            version: { type: String, required: true },
+            action: { type: String, enum: ['ACKNOWLEDGED', 'DISMISSED'], required: true },
+            at: { type: Date, default: Date.now },
+        }],
+        default: [],
+    },
+
     status: {
         type: String,
         enum: ["pending", "approved", "rejected","suspended"],

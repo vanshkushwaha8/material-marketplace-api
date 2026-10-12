@@ -65,6 +65,9 @@ async function createNotification({
   entityType = null,
   entityId = null,
   entityName = null,
+  // Optional "one per event" key (see notification.schema.js). A second
+  // call with the same key is a no-op: nothing stored, pushed or streamed.
+  dedupeKey = null,
 }) {
   if (!recipientId) return null;
 
@@ -77,6 +80,7 @@ async function createNotification({
 
   console.log('[NOTIFICATION] Actor:', actorName || 'system', '| Receiver:', recipientId, '| Type:', type, '| Entity:', entityType || '-', entityId || '');
 
+  let duplicate = false;
   const notification = await notificationModel
     .create({
       recipient: recipientId,
@@ -88,8 +92,13 @@ async function createNotification({
       entityType,
       entityId,
       entityName,
+      ...(dedupeKey ? { dedupeKey } : {}),
     })
     .catch((err) => {
+      if (err?.code === 11000 && dedupeKey) {
+        duplicate = true; // already sent for this event
+        return null;
+      }
       console.error(
         'Notification creation failed:',
         err.message,
@@ -109,6 +118,7 @@ async function createNotification({
       console.error('Push notification failed (non-fatal):', err.message);
     });
   }
+  if (duplicate) console.log('[NOTIFICATION] Skipped duplicate', dedupeKey);
   return notification;
 }
 

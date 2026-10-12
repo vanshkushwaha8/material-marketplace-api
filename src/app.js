@@ -288,6 +288,7 @@ const startServer = async () => {
 
         const {
           expireStaleReservations,
+          resumeStalledSettlements,
         } = require('./service/app/transaction.service');
 
 
@@ -304,6 +305,13 @@ const startServer = async () => {
               console.log(
                 `Offer expiry sweep — offers: ${offerResult.modified}, reservations released: ${reservationResult.released}`
               );
+
+              // Buyer-confirmed orders whose settlement stalled mid-way.
+              const settlementResult =
+                await resumeStalledSettlements();
+              if (settlementResult.resumed) {
+                console.log(`Settlement sweep — resumed: ${settlementResult.resumed}`);
+              }
             } catch (err) {
               console.error(
                 "Offer/reservation expiry sweep failed:",
