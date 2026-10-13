@@ -56,6 +56,7 @@ async function listingStats() {
           minPriceUnit: { $first: '$unit' },
           // first photo among the category's listings, cheapest first
           images: { $push: { $arrayElemAt: ['$images.url', 0] } },
+          prices: { $push: { price: '$price', unit: '$unit' } },
         },
       },
       {
@@ -64,6 +65,16 @@ async function listingStats() {
           sellerCount: { $size: '$sellers' },
           minPrice: 1,
           minPriceUnit: 1,
+          // highest price in the same unit as minPrice — a bag and a ton
+          // price never form one range
+          maxPrice: {
+            $max: {
+              $map: {
+                input: { $filter: { input: '$prices', cond: { $eq: ['$$this.unit', '$minPriceUnit'] } } },
+                in: '$$this.price',
+              },
+            },
+          },
           imageUrl: { $arrayElemAt: [{ $filter: { input: '$images', cond: { $ne: ['$$this', null] } } }, 0] },
         },
       },
@@ -91,6 +102,7 @@ async function summary() {
       sellerCount: s?.sellerCount || 0,
       minPrice: s ? s.minPrice : null,
       minPriceUnit: s ? s.minPriceUnit : null,
+      maxPrice: s ? s.maxPrice : null,
       imageUrl: s?.imageUrl || '',
     };
   });

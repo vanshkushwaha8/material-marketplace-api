@@ -22,12 +22,12 @@ describe("materialCategory.service.summary", () => {
       { _id: "c2", name: "Pipes", slug: "pipes", logo: "pipes.png" },
     ]));
     materialListingModel.aggregate.mockResolvedValue([
-      { _id: "c1", listingCount: 3, sellerCount: 2, minPrice: 8, minPriceUnit: "piece", imageUrl: "/images/b.jpg" },
+      { _id: "c1", listingCount: 3, sellerCount: 2, minPrice: 8, minPriceUnit: "piece", maxPrice: 12, imageUrl: "/images/b.jpg" },
     ]);
     const data = await service.summary();
     expect(data).toEqual([
-      { _id: "c1", name: "Bricks", slug: "bricks", parentCategory: null, logoUrl: "", listingCount: 3, sellerCount: 2, minPrice: 8, minPriceUnit: "piece", imageUrl: "/images/b.jpg" },
-      { _id: "c2", name: "Pipes", slug: "pipes", parentCategory: null, logoUrl: "/images/pipes.png", listingCount: 0, sellerCount: 0, minPrice: null, minPriceUnit: null, imageUrl: "" },
+      { _id: "c1", name: "Bricks", slug: "bricks", parentCategory: null, logoUrl: "", listingCount: 3, sellerCount: 2, minPrice: 8, minPriceUnit: "piece", maxPrice: 12, imageUrl: "/images/b.jpg" },
+      { _id: "c2", name: "Pipes", slug: "pipes", parentCategory: null, logoUrl: "/images/pipes.png", listingCount: 0, sellerCount: 0, minPrice: null, minPriceUnit: null, maxPrice: null, imageUrl: "" },
     ]);
     // public fields only — no admin-side spec definitions etc.
     expect(JSON.stringify(data)).not.toContain("specFields");
