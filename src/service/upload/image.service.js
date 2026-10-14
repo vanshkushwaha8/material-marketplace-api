@@ -19,6 +19,17 @@ const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 // consumer (Mongo storage, the frontend, toBareFilename()) working
 // unmodified, since the returned string still looks like what they
 // already expect.
+// Every uploaded photo is re-encoded the same way: honour the camera's EXIF
+// rotation, cap the longest side at 1600px (phone photos arrive at 4000px+
+// and several MB; cards show them at ≤ 800px), WebP at quality 80. Metadata
+// (incl. GPS location) is dropped by sharp's default output.
+const MAX_IMAGE_SIDE_PX = 1600;
+const toWebp = (data, filePath) => sharp(data)
+  .rotate()
+  .resize(MAX_IMAGE_SIDE_PX, MAX_IMAGE_SIDE_PX, { fit: "inside", withoutEnlargement: true })
+  .webp({ quality: 80 })
+  .toFile(filePath);
+
 const uniqueName = (originalName, ext) => {
   const ts = Date.now();
   const rand = crypto.randomBytes(4).toString("hex");
@@ -43,7 +54,7 @@ imageService.singleImage = async (request) => {
   } else if ([".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext)) {
     const tempImageName = uniqueName(file.name, ".webp");
     const imagePath = path.join(uploadDir, tempImageName);
-    await sharp(file.data).webp().toFile(imagePath);
+    await toWebp(file.data, imagePath);
     return tempImageName;
   } else {
     throw new Error("Unsupported file type. Only images (.jpg, .jpeg, .png, .gif, .webp) and PDFs are allowed.");
@@ -74,7 +85,7 @@ imageService.multiImage = async (request) => {
         return pdfName;
       } else if ([".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext)) {
         const imageName = uniqueName(image.name, ".webp");
-        await sharp(image.data).webp().toFile(path.join(uploadDir, imageName));
+        await toWebp(image.data, path.join(uploadDir, imageName));
         return imageName;
       } else {
         throw new Error(`Unsupported file type: ${image.name}`);

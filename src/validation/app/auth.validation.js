@@ -3,6 +3,11 @@ const { isPasswordSimilarToUserInfo } = require('../../utils/passwordSimilarity'
 const { KNOWN_COUNTRY_CODES } = require('../../config/supportedCountries');
 const { SELLER_TYPES } = require('../../constants/sellerType.constants');
 const { INDIAN_STATES, INDIA_LAT_RANGE, INDIA_LNG_RANGE } = require('../../constants/indianStates.constants');
+
+// Digits with an optional leading +, spaces/dashes allowed (E.164 from the
+// signup phone picker, or "+91 98765 43210" typed in settings): 8–15 digits.
+const PHONE_PATTERN = /^\+?(?:[0-9][\s-]?){7,14}[0-9]$/;
+
 class authValidation {
     static get passwordRule() {
         return Joi.string()
@@ -36,9 +41,14 @@ class authValidation {
                     'any.only': 'Invalid userType',
                 }),
             fullName: Joi.string()
+                .trim()
+                .min(2)
+                .max(100)
                 .required()
                 .messages({
                     'string.empty': 'Full name is required',
+                    'string.min': 'Full name must be at least 2 characters',
+                    'string.max': 'Full name must be at most 100 characters',
                 }),
             email: Joi.string()
                 .trim()
@@ -52,10 +62,13 @@ class authValidation {
                 }),
             password: this.passwordRuleRequired,
             phoneNumber: Joi.string()
+                .trim()
+                .pattern(PHONE_PATTERN)
                 .required()
                 .messages({
                     'string.empty': 'phoneNumber is required.',
-                    'any.required': 'phoneNumber is required.'
+                    'any.required': 'phoneNumber is required.',
+                    'string.pattern.base': 'Enter a valid phone number.'
                 }),
 
             // BUILD MATERIAL only operates in India for Buyer and Seller
@@ -347,17 +360,25 @@ class authValidation {
                 }),
 
             fullName: Joi.string()
+                .trim()
+                .min(2)
+                .max(100)
                 .optional()
-                .allow('')
                 .messages({
-                    'string.base': 'Full name must be a string'
+                    'string.base': 'Full name must be a string',
+                    'string.empty': 'Full name cannot be empty',
+                    'string.min': 'Full name must be at least 2 characters',
+                    'string.max': 'Full name must be at most 100 characters'
                 }),
 
             phoneNumber: Joi.string()
+                .trim()
+                .pattern(PHONE_PATTERN)
                 .optional()
                 .allow('')
                 .messages({
-                    'string.base': 'Phone number must be a string'
+                    'string.base': 'Phone number must be a string',
+                    'string.pattern.base': 'Enter a valid phone number.'
                 }),
 
             address1: Joi.string()

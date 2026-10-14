@@ -68,7 +68,47 @@ const setupApp = () => {
 
   app.set("trust proxy", 1);
 
+  // Enforce HTTPS in production: behind the proxy/load balancer, a plain
+  // http:// request arrives with X-Forwarded-Proto=http (req.secure false).
+  // GET/HEAD are redirected; anything else is refused rather than silently
+  // re-sent, so credentials never travel unencrypted. HSTS (helmet, below)
+  // makes browsers skip the http:// hop entirely after the first visit.
+  if (configenv.FORCE_HTTPS) {
+    app.use((req, res, next) => {
+      if (req.secure) return next();
+      if (req.method === "GET" || req.method === "HEAD") {
+        return res.redirect(308, `https://${req.headers.host}${req.originalUrl}`);
+      }
+      return res.status(403).json({ status: false, message: "HTTPS is required." });
+    });
+  }
+
   app.use(requestIdMiddleware);
+
+  // Uploaded images, mounted BEFORE the API-wide `no-store` below: browsers
+  // were re-downloading every product photo on every page view. Upload
+  // names are unique (timestamp + random, see image.service.js) and never
+  // overwritten, so a long immutable cache is safe.
+  const imagePaths = [
+    "../public/tempUploads",
+    "../public/profile",
+    "../public/adminProfile",
+    "../public/images",
+    // kycDocuments / investmentDocuments / projectDocuments (investment-era,
+    // incl. identity documents) are deliberately NOT served any more.
+    "../public/documents",
+    "../public/admin",
+    "../public/cms",
+    "../public/materialListingMedia",
+  ];
+
+  imagePaths.forEach((p) => {
+    app.use(
+      "/images",
+      express.static(path.join(__dirname, p), { maxAge: "30d", immutable: true })
+    );
+  });
+
   app.use(cookieParser());
 
   app.use((req, res, next) => {
@@ -98,26 +138,6 @@ const setupApp = () => {
       credentials: true,
     })
   );
-
-  const imagePaths = [
-    "../public/tempUploads",
-    "../public/profile",
-    "../public/adminProfile",
-    "../public/images",
-    // kycDocuments / investmentDocuments / projectDocuments (investment-era,
-    // incl. identity documents) are deliberately NOT served any more.
-    "../public/documents",
-    "../public/admin",
-    "../public/cms",
-    "../public/materialListingMedia",
-  ];
-
-  imagePaths.forEach((p) => {
-    app.use(
-      "/images",
-      express.static(path.join(__dirname, p))
-    );
-  });
 
   app.use((req, res, next) => {
     res.locals.cspNonce =

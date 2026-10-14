@@ -6,6 +6,11 @@ const configEnv = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   PORT: process.env.PORT || 5200,
   SHOW_ERROR_DETAILS: String(process.env.SHOW_ERROR_DETAILS || '').toLowerCase() === 'true',
+  // Redirect/refuse plain-http requests. On by default in production; set
+  // false only if TLS ends at a proxy that does not send X-Forwarded-Proto.
+  FORCE_HTTPS: process.env.FORCE_HTTPS !== undefined
+    ? String(process.env.FORCE_HTTPS).toLowerCase() === 'true'
+    : (process.env.NODE_ENV || 'development') === 'production',
 
   // ── Database ──
   MONGODB_URL: process.env.MONGODB_URL,

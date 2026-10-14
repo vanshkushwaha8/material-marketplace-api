@@ -7,14 +7,15 @@ const { authMiddleware, twoFactorAuthenticationCheck, consentEnforced } = requir
 const { authorize } = require('../../middleware/authorize.middleware');
 const { USER_PERMISSIONS: P } = require('../../constants/rbac.constants');
 const { authapiLimiter } = require("../../utils/rateLimiter.utils");
+const { honeypot } = require("../../middleware/honeypot.middleware");
 
 const router = express.Router();
-router.post("/register", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 10 }), authController.register);
+router.post("/register", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 10 }), honeypot, authController.register);
 router.post("/login", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 20 }), authController.login);
 router.post("/google-login", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 20 }), authController.googleLogin);
 
 router.get("/emailVerification", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), passwordController.emailVerification);
-router.post("/resend-verification", authapiLimiter({ windowMs: 10 * 60 * 1000, max: 5, message: "Too many verification emails requested. Please wait before trying again." }), passwordController.resendVerfication);
+router.post("/resend-verification", authapiLimiter({ windowMs: 10 * 60 * 1000, max: 5, message: "Too many verification emails requested. Please wait before trying again." }), honeypot, passwordController.resendVerfication);
 router.get("/validate-reset-token", authapiLimiter({ windowMs: 10 * 60 * 1000, max: 30 }), passwordController.validateResetToken);
 
 router.post('/2fa/login/send-email', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 5 }), twofaController.sendLoginEmailOtp);
@@ -32,7 +33,7 @@ router.get("/consent/profile", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 3
 
 router.get("/userconsent/get", authapiLimiter({ windowMs: 15 * 60 * 1000, max: 300 }), userConsentController.get);
 
-router.post('/request/password', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 10 }), passwordController.requestPasswordReset);
+router.post('/request/password', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 10 }), honeypot, passwordController.requestPasswordReset);
 router.post('/reset/password', authapiLimiter({ windowMs: 15 * 60 * 1000, max: 10 }), passwordController.resetPassword);
 
 module.exports = router;

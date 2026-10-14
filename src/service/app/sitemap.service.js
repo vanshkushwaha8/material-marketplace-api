@@ -22,7 +22,12 @@ function slugify(text) {
 const xmlEscape = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
 // Public, indexable pages only (mirrors robots.txt / page-level robots meta).
-const STATIC_PATHS = ['/', '/materials', '/near-me', '/how-to-buy', '/for-sellers', '/about-us', '/faqs', '/help-center', '/contact-us'];
+const STATIC_PATHS = [
+  '/', '/materials', '/near-me', '/compare', '/post-requirement',
+  '/how-to-buy', '/for-sellers', '/about-us', '/faqs', '/help-center', '/contact-us',
+  '/buyer-support', '/disputes', '/safety-guide', '/careers',
+  '/privacy-policy', '/terms-of-use', '/cookie-policy',
+];
 
 // Sitemaps are capped at 50,000 URLs; beyond that this needs a sitemap index.
 const MAX_LISTING_URLS = 45000;
