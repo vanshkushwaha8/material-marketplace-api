@@ -5,7 +5,7 @@ const { mkdir } = require('node:fs/promises');
 const ROOT_DIR = path.resolve();
 const TEMP_ROOT = path.join(ROOT_DIR, 'public', 'tempUploads');
 
-/**
+/***
  * Both the old filename format (`{timestamp}___{originalName}.ext`) and the
  * new one (`{timestamp}_{randomHex}___{originalName}.ext`) lead with a
  * plain millisecond Unix timestamp before the first `_`/`___`. Parsing it
